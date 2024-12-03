@@ -1,0 +1,11 @@
+prefix=/home/a/up-mipi/usr/out/ipu_mtl/install/usr/
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include/libcamhal
+
+Name: libcamhal
+Description: Camera HAL Library
+URL:
+Version: 
+Libs: -L${libdir} -lcamhal
+Cflags: -I${includedir} -I${includedir}/api -I${includedir}/utils
