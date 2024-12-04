@@ -4,6 +4,8 @@
 #include <linux/acpi.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/dmi.h>
+#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
@@ -69,6 +71,43 @@
 #define AR0234_TEST_PATTERN_WALKING	256
 
 #define to_ar0234(_sd)	container_of(_sd, struct ar0234, sd)
+
+struct upmipi_ctrl_gpio {
+	const char *name;
+	int offset;
+};
+
+const struct upmipi_ctrl_gpio upx_mtl01_gpios[] = {
+        {
+                .name = "CAM1_RST",
+                .offset = 397,  //D13
+        },
+        {
+                .name = "CRD1_PWREN",
+                .offset = 72,  //C8       
+        },
+        {
+                .name = "CAM2_RST",
+                .offset = 113,  //A17        
+        },
+        {
+                .name = "CRD2_PWREN",
+                .offset = 115, //A19  
+        },
+        {},
+};
+
+
+static const struct dmi_system_id upmipi_dmi_table[] = {
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPX-MTL01"),
+		},
+		.driver_data =  (void*)upx_mtl01_gpios,
+	},
+	{},
+};
 
 struct ar0234_reg_list {
 	u32 num_of_regs;
@@ -550,7 +589,7 @@ static int ar0234_init_controls(struct ar0234 *ar0234)
 	s64 exposure_max, vblank_max, vblank_def, hblank;
 	u32 link_freq_size;
 	int ret;
-
+	
 	ctrl_hdlr = &ar0234->ctrl_handler;
 	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 10);
 	if (ret)
@@ -928,7 +967,7 @@ static int ar0234_identify_module(struct ar0234 *ar0234)
 	struct i2c_client *client = v4l2_get_subdevdata(&ar0234->sd);
 	int ret;
 	u64 val;
-
+	
 	ret = cci_read(ar0234->regmap, AR0234_REG_CHIP_ID, &val, NULL);
 	if (ret)
 		return ret;
@@ -962,6 +1001,20 @@ static int ar0234_probe(struct i2c_client *client)
 	struct clk *xclk;
 	u32 xclk_freq;
 	int ret;
+	
+	/* check board id to arrange driver data for gpio ctrl*/
+	const struct dmi_system_id *upmipi_id = dmi_first_match(upmipi_dmi_table);
+	struct upmipi_ctrl_gpio *ctl_gpio;
+	if(upmipi_id)
+	{
+	  ctl_gpio = (struct upmipi_ctrl_gpio*)upmipi_id->driver_data;
+	  dev_info(NULL, "name:%s, offset:%d", ctl_gpio[2].name, ctl_gpio[2].offset);
+	  gpio_request(ctl_gpio[0].offset+512, ctl_gpio[0].name);
+	  gpio_request(ctl_gpio[2].offset+512, ctl_gpio[2].name);
+	  gpio_direction_output(ctl_gpio[0].offset+512,GPIOD_OUT_HIGH);
+	  gpio_direction_output(ctl_gpio[2].offset+512,GPIOD_OUT_HIGH);
+	  udelay(1000);
+	}
 
 	ar0234 = devm_kzalloc(&client->dev, sizeof(*ar0234), GFP_KERNEL);
 	if (!ar0234)
