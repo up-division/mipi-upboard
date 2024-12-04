@@ -4,6 +4,7 @@
 #include <linux/acpi.h>
 #include <linux/cleanup.h>
 #include <linux/device.h>
+#include <linux/dmi.h>
 #include <linux/i2c.h>
 #include <linux/mei_cl_bus.h>
 #include <linux/platform_device.h>
@@ -87,6 +88,8 @@ static const struct ipu_sensor_config ipu_supported_sensors[] = {
 	IPU_SENSOR_CONFIG("OVTI8856", 3, 180000000, 360000000, 720000000),
 	/* OnSemiconductor ar0234 */
 	IPU_SENSOR_CONFIG("INTC10C0", 1, 360000000),
+	/* Lontium lt6911uxc */
+	IPU_SENSOR_CONFIG("INTC10B1", 0),
 	/* Lontium lt6911uxe */
 	IPU_SENSOR_CONFIG("INTC10C5", 0),
 };
@@ -820,9 +823,74 @@ static int ipu_bridge_check_fwnode_graph(struct fwnode_handle *fwnode)
 
 static DEFINE_MUTEX(ipu_bridge_mutex);
 
+struct upmipi_ctrl_gpio {
+	const char *name;
+	int offset;
+};
+
+const struct upmipi_ctrl_gpio upx_adlp01_gpios[] = {
+        {
+                .name = "CAM1_RST",
+                .offset = 357,  //R5
+        },
+        {
+                .name = "CRD1_PWREN",
+                .offset = 23,  //B23       
+        },
+        {
+                .name = "CAM2_RST",
+                .offset = 335,  //E15        
+        },
+        {
+                .name = "CRD2_PWREN",
+                .offset = 336, //E16 
+        },
+        {},
+};
+
+const struct upmipi_ctrl_gpio upx_mtl01_gpios[] = {
+        {
+                .name = "CAM1_RST",
+                .offset = 397,  //D13
+        },
+        {
+                .name = "CRD1_PWREN",
+                .offset = 72,  //C8       
+        },
+        {
+                .name = "CAM2_RST",
+                .offset = 113,  //A17        
+        },
+        {
+                .name = "CRD2_PWREN",
+                .offset = 115, //A19  
+        },
+        {},
+};
+
+
+static const struct dmi_system_id upmipi_dmi_table[] = {
+	{
+		.matches = { /* UP Xtreme i12 */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPX-ADLP01"),
+		},		
+		.driver_data =  (void*)upx_adlp01_gpios,
+	},		
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPX-MTL01"),
+		},
+		.driver_data =  (void*)upx_mtl01_gpios,
+	},
+	{},
+};
+
 int ipu_bridge_init(struct device *dev,
 		    ipu_parse_sensor_fwnode_t parse_sensor_fwnode)
 {
+        const struct dmi_system_id *upmipi_id;
 	struct fwnode_handle *fwnode;
 	struct ipu_bridge *bridge;
 	unsigned int i;
@@ -876,6 +944,9 @@ int ipu_bridge_init(struct device *dev,
 	}
 
 	set_secondary_fwnode(dev, fwnode);
+	
+	/* check board id to arrange driver data for gpio ctrl*/
+	upmipi_id = dmi_first_match(upmipi_dmi_table);
 
 	return 0;
 

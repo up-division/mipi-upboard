@@ -17,7 +17,7 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
-#include <media/imx390.h>
+#include "imx390.h"
 
 #define IMX390_LINK_FREQ_360MHZ		360000000ULL
 #define IMX390_LINK_FREQ_300MHZ		300000000ULL

@@ -15,11 +15,11 @@ CONFIG_MODULE_SIG:=n
 # export CONFIG_VIDEO_HM2172 = m
 # export CONFIG_VIDEO_HI556 = m
 export CONFIG_VIDEO_AR0234 = m
-# export CONFIG_VIDEO_LT6911UXC = m
-# export CONFIG_VIDEO_LT6911UXE = m
+export CONFIG_VIDEO_LT6911UXC = m
+export CONFIG_VIDEO_LT6911UXE = m
 # export CONFIG_VIDEO_D4XX = m
 # export CONFIG_VIDEO_TI960 = m
-# export CONFIG_VIDEO_IMX390 = m
+export CONFIG_VIDEO_IMX390 = m
 export CONFIG_VIDEO_IMX477 = m
 
 subdir-ccflags-y += -I$(src)/include/ \
