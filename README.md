@@ -7,6 +7,12 @@ Supported products
 * UP Xtreme i14
 * UP Squared Pro 7000
 * UP Squared i12
+
+Supported camera sensors
+=============================================
+* AR0234
+* IMX477
+* IMX708
   
 Special Requirements
 =============================================
@@ -24,7 +30,7 @@ setup from upmipi folder by following command
 ```
 ./env_setup.sh
 ```
-Testing sersors 
+Sensor testing 
 =============================================
 1. BIOS Setup
 ---------------
