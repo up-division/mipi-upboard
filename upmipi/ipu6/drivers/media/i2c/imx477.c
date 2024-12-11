@@ -16,13 +16,13 @@
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
-#include <linux/version.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-mediabus.h>
 
+#include "mipi-upboard.h"
 
 #ifndef MEDIA_BUS_FMT_SENSOR_DATA
 #define MEDIA_BUS_FMT_SENSOR_DATA	0x7002
@@ -32,7 +32,7 @@ static int dpc_enable = 1;
 module_param(dpc_enable, int, 0644);
 MODULE_PARM_DESC(dpc_enable, "Enable on-sensor DPC");
 
-static int trigger_mode = 1;
+static int trigger_mode;
 module_param(trigger_mode, int, 0644);
 MODULE_PARM_DESC(trigger_mode, "Set vsync trigger mode: 1=source, 2=sink");
 
@@ -50,11 +50,7 @@ MODULE_PARM_DESC(trigger_mode, "Set vsync trigger mode: 1=source, 2=sink");
 
 #define IMX477_REG_ORIENTATION		0x101
 
-#ifdef CONFIG_ACPI
-#define IMX477_XCLK_FREQ		19200000
-#else
 #define IMX477_XCLK_FREQ		24000000
-#endif
 
 #define IMX477_DEFAULT_LINK_FREQ	450000000
 
@@ -175,8 +171,48 @@ struct imx477_mode {
 	struct imx477_reg_list reg_list;
 };
 
-static const s64 imx477_link_freq_menu[] = {
-	IMX477_DEFAULT_LINK_FREQ,
+/* Link frequency setup */
+enum {
+	IMX477_LINK_FREQ_450MHZ,
+	IMX477_LINK_FREQ_453MHZ,
+	IMX477_LINK_FREQ_456MHZ,
+};
+
+static const s64 link_freqs[] = {
+	[IMX477_LINK_FREQ_450MHZ] = 450000000,
+	[IMX477_LINK_FREQ_453MHZ] = 453000000,
+	[IMX477_LINK_FREQ_456MHZ] = 456000000,
+};
+
+/* 450MHz is the nominal "default" link frequency */
+static const struct imx477_reg link_450Mhz_regs[] = {
+	{0x030E, 0x00},
+	{0x030F, 0x96},
+};
+
+static const struct imx477_reg link_453Mhz_regs[] = {
+	{0x030E, 0x00},
+	{0x030F, 0x97},
+};
+
+static const struct imx477_reg link_456Mhz_regs[] = {
+	{0x030E, 0x00},
+	{0x030F, 0x98},
+};
+
+static const struct imx477_reg_list link_freq_regs[] = {
+	[IMX477_LINK_FREQ_450MHZ] = {
+		.regs = link_450Mhz_regs,
+		.num_of_regs = ARRAY_SIZE(link_450Mhz_regs)
+	},
+	[IMX477_LINK_FREQ_453MHZ] = {
+		.regs = link_453Mhz_regs,
+		.num_of_regs = ARRAY_SIZE(link_453Mhz_regs)
+	},
+	[IMX477_LINK_FREQ_456MHZ] = {
+		.regs = link_456Mhz_regs,
+		.num_of_regs = ARRAY_SIZE(link_456Mhz_regs)
+	},
 };
 
 static const struct imx477_reg mode_common_regs[] = {
@@ -569,8 +605,6 @@ static const struct imx477_reg mode_4056x3040_regs[] = {
 	{0x0309, 0x0c},
 	{0x030b, 0x02},
 	{0x030d, 0x02},
-	{0x030e, 0x00},
-	{0x030f, 0x96},
 	{0x0310, 0x01},
 	{0x0820, 0x07},
 	{0x0821, 0x08},
@@ -670,8 +704,6 @@ static const struct imx477_reg mode_2028x1520_regs[] = {
 	{0x0309, 0x0c},
 	{0x030b, 0x02},
 	{0x030d, 0x02},
-	{0x030e, 0x00},
-	{0x030f, 0x96},
 	{0x0310, 0x01},
 	{0x0820, 0x07},
 	{0x0821, 0x08},
@@ -771,8 +803,6 @@ static const struct imx477_reg mode_2028x1080_regs[] = {
 	{0x0309, 0x0c},
 	{0x030b, 0x02},
 	{0x030d, 0x02},
-	{0x030e, 0x00},
-	{0x030f, 0x96},
 	{0x0310, 0x01},
 	{0x0820, 0x07},
 	{0x0821, 0x08},
@@ -901,8 +931,6 @@ static const struct imx477_reg mode_1332x990_regs[] = {
 	{0x0309, 0x0a},
 	{0x030b, 0x02},
 	{0x030d, 0x02},
-	{0x030e, 0x00},
-	{0x030f, 0x96},
 	{0x0310, 0x01},
 	{0x0820, 0x07},
 	{0x0821, 0x08},
@@ -1087,13 +1115,9 @@ static const int imx477_test_pattern_val[] = {
 /* regulator supplies */
 static const char * const imx477_supply_name[] = {
 	/* Supplies can be enabled in any order */
-#ifdef CONFIG_ACPI
-	"avdd",
-#else
 	"VANA",  /* Analog (2.8V) supply */
 	"VDIG",  /* Digital Core (1.05V) supply */
 	"VDDL",  /* IF (1.8V) supply */
-#endif
 };
 
 #define IMX477_NUM_SUPPLIES ARRAY_SIZE(imx477_supply_name)
@@ -1135,6 +1159,8 @@ struct imx477 {
 	struct v4l2_ctrl *hflip;
 	struct v4l2_ctrl *vblank;
 	struct v4l2_ctrl *hblank;
+
+	unsigned int link_freq_idx;
 
 	/* Current mode */
 	const struct imx477_mode *mode;
@@ -1295,18 +1321,10 @@ static void imx477_set_default_format(struct imx477 *imx477)
 static int imx477_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct imx477 *imx477 = to_imx477(sd);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-	struct v4l2_mbus_framefmt *try_fmt_img =
-		v4l2_subdev_get_try_format(sd, fh->state, IMAGE_PAD);
-	struct v4l2_mbus_framefmt *try_fmt_meta =
-		v4l2_subdev_get_try_format(sd, fh->state, METADATA_PAD);
-#else
 	struct v4l2_mbus_framefmt *try_fmt_img =
 		v4l2_subdev_state_get_format(fh->state, IMAGE_PAD);
 	struct v4l2_mbus_framefmt *try_fmt_meta =
 		v4l2_subdev_state_get_format(fh->state, METADATA_PAD);
-#endif
-
 	struct v4l2_rect *try_crop;
 
 	mutex_lock(&imx477->mutex);
@@ -1325,16 +1343,7 @@ static int imx477_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	try_fmt_meta->field = V4L2_FIELD_NONE;
 
 	/* Initialize try_crop */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-	try_crop = v4l2_subdev_get_try_crop(sd, fh->state, IMAGE_PAD);
-	//	case V4L2_SEL_TGT_COMPOSE:
-	//		return v4l2_subdev_get_try_compose(sd, state, pad);
-#else
 	try_crop = v4l2_subdev_state_get_crop(fh->state, IMAGE_PAD);
-	//	case V4L2_SEL_TGT_COMPOSE:
-	//		return v4l2_subdev_state_get_compose(state, pad);
-#endif
-
 	try_crop->left = IMX477_PIXEL_ARRAY_LEFT;
 	try_crop->top = IMX477_PIXEL_ARRAY_TOP;
 	try_crop->width = IMX477_PIXEL_ARRAY_WIDTH;
@@ -1568,16 +1577,9 @@ static int imx477_get_pad_format(struct v4l2_subdev *sd,
 	mutex_lock(&imx477->mutex);
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-		struct v4l2_mbus_framefmt *try_fmt =
-			v4l2_subdev_get_try_format(&imx477->sd, sd_state,
-						   fmt->pad);
-#else
 		struct v4l2_mbus_framefmt *try_fmt =
 			v4l2_subdev_state_get_format(sd_state,
 						   fmt->pad);
-#endif
-
 		/* update the code which could change due to vflip or hflip: */
 		try_fmt->code = fmt->pad == IMAGE_PAD ?
 				imx477_get_format_code(imx477, try_fmt->code) :
@@ -1671,13 +1673,8 @@ static int imx477_set_pad_format(struct v4l2_subdev *sd,
 					      fmt->format.height);
 		imx477_update_image_pad_format(imx477, mode, fmt);
 		if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-			framefmt = v4l2_subdev_get_try_format(sd, sd_state,
-							fmt->pad);
-#else
-			framefmt =  v4l2_subdev_state_get_format(sd_state,
-						 	fmt->pad);
-#endif
+			framefmt = v4l2_subdev_state_get_format(sd_state,
+							      fmt->pad);
 			*framefmt = fmt->format;
 		} else if (imx477->mode != mode) {
 			imx477->mode = mode;
@@ -1686,13 +1683,8 @@ static int imx477_set_pad_format(struct v4l2_subdev *sd,
 		}
 	} else {
 		if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-			framefmt = v4l2_subdev_get_try_format(sd, sd_state,
-							fmt->pad);
-#else
-			framefmt =  v4l2_subdev_state_get_format(sd_state,
-						 	fmt->pad);
-#endif
+			framefmt = v4l2_subdev_state_get_format(sd_state,
+							      fmt->pad);
 			*framefmt = fmt->format;
 		} else {
 			/* Only one embedded data mode is supported */
@@ -1712,11 +1704,7 @@ __imx477_get_pad_crop(struct imx477 *imx477,
 {
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-		return v4l2_subdev_get_try_crop(&imx477->sd, sd_state, pad);
-#else
-	 	return v4l2_subdev_state_get_crop(sd_state, pad);
-#endif
+		return v4l2_subdev_state_get_crop(sd_state, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
 		return &imx477->mode->crop;
 	}
@@ -1765,7 +1753,7 @@ static int imx477_get_selection(struct v4l2_subdev *sd,
 static int imx477_start_streaming(struct imx477 *imx477)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx477->sd);
-	const struct imx477_reg_list *reg_list;
+	const struct imx477_reg_list *reg_list, *freq_regs;
 	const struct imx477_reg_list *extra_regs;
 	int ret, tm;
 
@@ -1776,6 +1764,13 @@ static int imx477_start_streaming(struct imx477 *imx477)
 			extra_regs = &imx477->compatible_data->extra_regs;
 			ret = imx477_write_regs(imx477,	extra_regs->regs,
 						extra_regs->num_of_regs);
+		}
+
+		if (!ret) {
+			/* Update the link frequency registers */
+			freq_regs = &link_freq_regs[imx477->link_freq_idx];
+			ret = imx477_write_regs(imx477, freq_regs->regs,
+						freq_regs->num_of_regs);
 		}
 
 		if (ret) {
@@ -1908,9 +1903,9 @@ static int imx477_power_on(struct device *dev)
 		goto reg_off;
 	}
 
-	gpiod_set_value_cansleep(imx477->reset_gpio, 1);
-	usleep_range(IMX477_XCLR_MIN_DELAY_US,
-		     IMX477_XCLR_MIN_DELAY_US + IMX477_XCLR_DELAY_RANGE_US);
+	//gpiod_set_value_cansleep(imx477->reset_gpio, 1);
+	//usleep_range(IMX477_XCLR_MIN_DELAY_US,
+	//	     IMX477_XCLR_MIN_DELAY_US + IMX477_XCLR_DELAY_RANGE_US);
 
 	return 0;
 
@@ -1925,7 +1920,7 @@ static int imx477_power_off(struct device *dev)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx477 *imx477 = to_imx477(sd);
 
-	gpiod_set_value_cansleep(imx477->reset_gpio, 0);
+	//gpiod_set_value_cansleep(imx477->reset_gpio, 0);
 	regulator_bulk_disable(IMX477_NUM_SUPPLIES, imx477->supplies);
 	clk_disable_unprepare(imx477->xclk);
 
@@ -2063,9 +2058,8 @@ static int imx477_init_controls(struct imx477 *imx477)
 	/* LINK_FREQ is also read only */
 	imx477->link_freq =
 		v4l2_ctrl_new_int_menu(ctrl_hdlr, &imx477_ctrl_ops,
-				       V4L2_CID_LINK_FREQ,
-				       ARRAY_SIZE(imx477_link_freq_menu) - 1, 0,
-				       imx477_link_freq_menu);
+				       V4L2_CID_LINK_FREQ, 0, 0,
+				       &link_freqs[imx477->link_freq_idx]);
 	if (imx477->link_freq)
 		imx477->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
@@ -2163,13 +2157,14 @@ static void imx477_free_controls(struct imx477 *imx477)
 	mutex_destroy(&imx477->mutex);
 }
 
-static int __maybe_unused imx477_check_hwcfg(struct device *dev)
+static int imx477_check_hwcfg(struct device *dev, struct imx477 *imx477)
 {
 	struct fwnode_handle *endpoint;
 	struct v4l2_fwnode_endpoint ep_cfg = {
 		.bus_type = V4L2_MBUS_CSI2_DPHY
 	};
 	int ret = -EINVAL;
+	int i;
 
 	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
 	if (!endpoint) {
@@ -2194,11 +2189,18 @@ static int __maybe_unused imx477_check_hwcfg(struct device *dev)
 		goto error_out;
 	}
 
-	if (ep_cfg.nr_of_link_frequencies != 1 ||
-	    ep_cfg.link_frequencies[0] != IMX477_DEFAULT_LINK_FREQ) {
+	for (i = 0; i < ARRAY_SIZE(link_freqs); i++) {
+		if (link_freqs[i] == ep_cfg.link_frequencies[0]) {
+			imx477->link_freq_idx = i;
+			break;
+		}
+	}
+
+	if (i == ARRAY_SIZE(link_freqs)) {
 		dev_err(dev, "Link frequency not supported: %lld\n",
 			ep_cfg.link_frequencies[0]);
-		goto error_out;
+			ret = -EINVAL;
+			goto error_out;
 	}
 
 	ret = 0;
@@ -2232,45 +2234,92 @@ static const struct imx477_compatible_data imx378_compatible = {
 	}
 };
 
+#ifdef CONFIG_ACPI
+static const struct acpi_device_id imx477_acpi_ids[] = {
+	{ "IMX477", 0 },
+	{}
+};
+MODULE_DEVICE_TABLE(acpi, imx477_acpi_ids);
+#else
 static const struct of_device_id imx477_dt_ids[] = {
 	{ .compatible = "sony,imx477", .data = &imx477_compatible },
 	{ .compatible = "sony,imx378", .data = &imx378_compatible },
 	{ /* sentinel */ }
 };
+MODULE_DEVICE_TABLE(of, imx477_dt_ids);
+#endif
 
 static int imx477_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct imx477 *imx477;
+	const struct of_device_id *match;
 	int ret;
+	u32 tm_of;
 
 	imx477 = devm_kzalloc(&client->dev, sizeof(*imx477), GFP_KERNEL);
 	if (!imx477)
 		return -ENOMEM;
 
+	/* Request optional enable pin */
+	imx477->reset_gpio = devm_gpiod_get_optional(dev, "reset",
+						     GPIOD_OUT_HIGH);						  
+        if(imx477->reset_gpio==NULL)
+        {
+	        struct upmipi_gpios *gpio_info = mipi_upboard_gpios();
+	        if(gpio_info)
+	        {
+	            dev_info(dev,"i2c adaptor nr:%d", client->adapter->nr);
+	            //dev_info(dev,"number of gpios:%d", gpio_info->ngpio);
+	            switch(client->adapter->nr)
+	            {
+	                case 0:
+	                case 1:
+	                case 2:
+	       	        gpio_request(gpio_info->gpios[0].offset+512, gpio_info->gpios[0].name);
+	                gpio_direction_output(gpio_info->gpios[0].offset+512, GPIOD_OUT_HIGH);         
+	       	        gpio_request(gpio_info->gpios[1].offset+512, gpio_info->gpios[1].name);
+	                gpio_direction_output(gpio_info->gpios[1].offset+512, GPIOD_OUT_HIGH);         
+	                break;
+	                case 3:
+	                case 4:
+	                case 5:
+	       	        gpio_request(gpio_info->gpios[2].offset+512, gpio_info->gpios[2].name);
+	                gpio_direction_output(gpio_info->gpios[2].offset+512, GPIOD_OUT_HIGH);         
+	       	        gpio_request(gpio_info->gpios[3].offset+512, gpio_info->gpios[3].name);
+	                gpio_direction_output(gpio_info->gpios[3].offset+512, GPIOD_OUT_HIGH);         
+                        break;	                
+	            }
+	            //udelay(10000);
+	        }
+        }
+        
 	v4l2_i2c_subdev_init(&imx477->sd, client, &imx477_subdev_ops);
 
 #ifdef CONFIG_ACPI
 	imx477->compatible_data =
 		(const struct imx477_compatible_data *)&imx477_compatible;
+		
+	/* Check the hardware configuration in device tree */
+	if (imx477_check_hwcfg(dev, imx477))
+		return -EINVAL;
+
 #else
-	const struct of_device_id *match = of_match_device(imx477_dt_ids, dev);
-	u32 tm_of;
-	if (!match) {
-		dev_err(dev, "failed to access sensor device tree configuration\n");
+	match = of_match_device(imx477_dt_ids, dev);
+	if (!match)
 		return -ENODEV;
-	}
 	imx477->compatible_data =
 		(const struct imx477_compatible_data *)match->data;
 
 	/* Check the hardware configuration in device tree */
-	if (imx477_check_hwcfg(dev))
+	if (imx477_check_hwcfg(dev, imx477))
 		return -EINVAL;
+#endif
 
 	/* Default the trigger mode from OF to -1, which means invalid */
 	ret = of_property_read_u32(dev->of_node, "trigger-mode", &tm_of);
 	imx477->trigger_mode_of = (ret == 0) ? tm_of : -1;
-#endif
+
 	/* Get system clock (xclk) */
 	imx477->xclk = devm_clk_get(dev, NULL);
 	if (IS_ERR(imx477->xclk)) {
@@ -2290,12 +2339,6 @@ static int imx477_probe(struct i2c_client *client)
 		dev_err(dev, "failed to get regulators\n");
 		return ret;
 	}
-
-	/* Request optional enable pin */
-	imx477->reset_gpio = devm_gpiod_get_optional(dev, "reset",
-						     GPIOD_OUT_HIGH);
-						     
-	dev_info(dev,"reset_gpio=%d",desc_to_gpio(imx477->reset_gpio));
 
 	/*
 	 * The sensor must be powered for imx477_identify_module()
@@ -2375,16 +2418,6 @@ static void imx477_remove(struct i2c_client *client)
 	pm_runtime_set_suspended(&client->dev);
 }
 
-#ifdef CONFIG_ACPI
-static const struct acpi_device_id imx477_acpi_ids[] = {
-	{ "IMX477", 0 },
-	{}
-};
-MODULE_DEVICE_TABLE(acpi, imx477_acpi_ids);
-#else
-MODULE_DEVICE_TABLE(of, imx477_dt_ids);
-#endif
-
 static const struct dev_pm_ops imx477_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(imx477_suspend, imx477_resume)
 	SET_RUNTIME_PM_OPS(imx477_power_off, imx477_power_on, NULL)
@@ -2393,22 +2426,20 @@ static const struct dev_pm_ops imx477_pm_ops = {
 static struct i2c_driver imx477_i2c_driver = {
 	.driver = {
 		.name = "imx477",
-		.pm = &imx477_pm_ops,
 #ifdef CONFIG_ACPI
 		.acpi_match_table = ACPI_PTR(imx477_acpi_ids),
 #else
-		.of_match_table	= imx477_dt_ids,
+                .of_match_table	= imx477_dt_ids,
 #endif
+		.pm = &imx477_pm_ops,
 	},
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
-	.probe_new = imx477_probe,
-#else
 	.probe = imx477_probe,
-#endif
 	.remove = imx477_remove,
 };
 
 module_i2c_driver(imx477_i2c_driver);
+
+MODULE_SOFTDEP("pre: intel_ipu6_isys");
 
 MODULE_AUTHOR("Naushir Patuck <naush@raspberrypi.com>");
 MODULE_DESCRIPTION("Sony IMX477 sensor driver");

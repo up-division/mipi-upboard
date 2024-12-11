@@ -4,8 +4,6 @@
 #include <linux/acpi.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <linux/dmi.h>
-#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
@@ -16,6 +14,8 @@
 #include <media/v4l2-event.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
+
+#include "mipi-upboard.h"
 
 /* Chip ID */
 #define AR0234_REG_CHIP_ID		CCI_REG16(0x3000)
@@ -71,43 +71,6 @@
 #define AR0234_TEST_PATTERN_WALKING	256
 
 #define to_ar0234(_sd)	container_of(_sd, struct ar0234, sd)
-
-struct upmipi_ctrl_gpio {
-	const char *name;
-	int offset;
-};
-
-const struct upmipi_ctrl_gpio upx_mtl01_gpios[] = {
-        {
-                .name = "CAM1_RST",
-                .offset = 397,  //D13
-        },
-        {
-                .name = "CRD1_PWREN",
-                .offset = 72,  //C8       
-        },
-        {
-                .name = "CAM2_RST",
-                .offset = 113,  //A17        
-        },
-        {
-                .name = "CRD2_PWREN",
-                .offset = 115, //A19  
-        },
-        {},
-};
-
-
-static const struct dmi_system_id upmipi_dmi_table[] = {
-	{
-		.matches = {
-			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPX-MTL01"),
-		},
-		.driver_data =  (void*)upx_mtl01_gpios,
-	},
-	{},
-};
 
 struct ar0234_reg_list {
 	u32 num_of_regs;
@@ -490,6 +453,8 @@ struct ar0234 {
 	struct regmap *regmap;
 	unsigned long link_freq_bitmap;
 	const struct ar0234_mode *cur_mode;
+	struct gpio_desc *rstio;
+	struct gpio_desc *pwren;
 };
 
 static int ar0234_set_ctrl(struct v4l2_ctrl *ctrl)
@@ -765,6 +730,8 @@ static int ar0234_set_format(struct v4l2_subdev *sd,
 	s64 hblank;
 	int ret;
 
+        dev_info(&client->dev, "ar0234_set_format fmt->width:%d, fmt->height:%d",fmt->format.width,fmt->format.height);
+        
 	mode = v4l2_find_nearest_size(supported_modes,
 				      ARRAY_SIZE(supported_modes),
 				      width, height,
@@ -977,6 +944,8 @@ static int ar0234_identify_module(struct ar0234 *ar0234)
 			AR0234_CHIP_ID, val);
 		return -ENXIO;
 	}
+	
+	dev_info(&client->dev, "chip id: %X", val);
 
 	return 0;
 }
@@ -1002,20 +971,37 @@ static int ar0234_probe(struct i2c_client *client)
 	u32 xclk_freq;
 	int ret;
 	
-	/* check board id to arrange driver data for gpio ctrl*/
-	const struct dmi_system_id *upmipi_id = dmi_first_match(upmipi_dmi_table);
-	struct upmipi_ctrl_gpio *ctl_gpio;
-	if(upmipi_id)
-	{
-	  ctl_gpio = (struct upmipi_ctrl_gpio*)upmipi_id->driver_data;
-	  dev_info(NULL, "name:%s, offset:%d", ctl_gpio[2].name, ctl_gpio[2].offset);
-	  gpio_request(ctl_gpio[0].offset+512, ctl_gpio[0].name);
-	  gpio_request(ctl_gpio[2].offset+512, ctl_gpio[2].name);
-	  gpio_direction_output(ctl_gpio[0].offset+512,GPIOD_OUT_HIGH);
-	  gpio_direction_output(ctl_gpio[2].offset+512,GPIOD_OUT_HIGH);
-	  udelay(1000);
-	}
-
+	/* Request optional enable pin */
+	struct gpio_desc *reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);	
+        if(reset_gpio==NULL)
+        {
+                dev_info(dev,"client->adapter->nr:%d",client->adapter->nr);
+	        struct upmipi_gpios *gpio_info = mipi_upboard_gpios();
+	        if(gpio_info)
+	        {
+	            switch(client->adapter->nr)
+	            {
+	                case 0:
+	                case 1:
+	                case 2:
+	       	        gpio_request(gpio_info->gpios[0].offset+512, gpio_info->gpios[0].name);
+	                gpio_direction_output(gpio_info->gpios[0].offset+512, GPIOD_OUT_HIGH);         
+	       	        gpio_request(gpio_info->gpios[1].offset+512, gpio_info->gpios[1].name);
+	                gpio_direction_output(gpio_info->gpios[1].offset+512, GPIOD_OUT_HIGH);         
+	                break;
+	                case 3:
+	                case 4:
+	                case 5:
+	       	        gpio_request(gpio_info->gpios[2].offset+512, gpio_info->gpios[2].name);
+	                gpio_direction_output(gpio_info->gpios[2].offset+512, GPIOD_OUT_HIGH);         
+	       	        gpio_request(gpio_info->gpios[3].offset+512, gpio_info->gpios[3].name);
+	                gpio_direction_output(gpio_info->gpios[3].offset+512, GPIOD_OUT_HIGH);         
+                        break;	                
+	            }
+	            //udelay(10000);
+	        }
+        }
+       
 	ar0234 = devm_kzalloc(&client->dev, sizeof(*ar0234), GFP_KERNEL);
 	if (!ar0234)
 		return -ENOMEM;
@@ -1123,6 +1109,8 @@ static struct i2c_driver ar0234_i2c_driver = {
 };
 
 module_i2c_driver(ar0234_i2c_driver);
+
+MODULE_SOFTDEP("pre: intel_ipu6_isys");
 
 MODULE_DESCRIPTION("ON Semiconductor ar0234 sensor driver");
 MODULE_AUTHOR("Dongcheng Yan <dongcheng.yan@intel.com>");
