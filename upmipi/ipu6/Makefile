@@ -21,6 +21,8 @@ export CONFIG_VIDEO_LT6911UXE = m
 # export CONFIG_VIDEO_TI960 = m
 export CONFIG_VIDEO_IMX390 = m
 export CONFIG_VIDEO_IMX477 = m
+export CONFIG_VIDEO_IMX708 = m
+
 
 subdir-ccflags-y += -I$(src)/include/ \
 	-DCONFIG_VIDEO_V4L2_SUBDEV_API

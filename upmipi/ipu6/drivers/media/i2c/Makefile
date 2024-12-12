@@ -18,4 +18,5 @@ obj-$(CONFIG_VIDEO_LT6911UXE) += lt6911uxe.o
 obj-$(CONFIG_VIDEO_D4XX) += d4xx.o
 obj-$(CONFIG_VIDEO_IMX390) += imx390.o
 obj-$(CONFIG_VIDEO_IMX477) += imx477.o
+obj-$(CONFIG_VIDEO_IMX708) += imx708.o
 obj-$(CONFIG_POWER_CTRL_LOGIC) += power_ctrl_logic.o
