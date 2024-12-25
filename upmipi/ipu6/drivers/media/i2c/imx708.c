@@ -26,7 +26,8 @@
 #include "mipi-upboard.h"
 
 #ifndef MEDIA_BUS_FMT_SENSOR_DATA
-#define MEDIA_BUS_FMT_SENSOR_DATA	0x7002
+#define MEDIA_BUS_FMT_SRGGB10_1X10		0x300f
+#define MEDIA_BUS_FMT_SENSOR_DATA	        MEDIA_BUS_FMT_SRGGB10_1X10
 #endif
 
 /*
