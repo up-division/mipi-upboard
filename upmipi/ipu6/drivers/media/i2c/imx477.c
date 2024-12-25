@@ -25,7 +25,8 @@
 #include "mipi-upboard.h"
 
 #ifndef MEDIA_BUS_FMT_SENSOR_DATA
-#define MEDIA_BUS_FMT_SENSOR_DATA	0x7002
+#define MEDIA_BUS_FMT_SRGGB12_1X12		0x3012
+#define MEDIA_BUS_FMT_SENSOR_DATA	        MEDIA_BUS_FMT_SRGGB12_1X12
 #endif
 
 static int dpc_enable = 1;
