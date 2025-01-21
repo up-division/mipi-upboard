@@ -998,7 +998,7 @@ static int ar0234_probe(struct i2c_client *client)
 	                gpio_direction_output(gpio_info->gpios[3].offset+512, GPIOD_OUT_HIGH);         
                         break;	                
 	            }
-	            //udelay(10000);
+	            udelay(10000);  //wait for device ready, needed for good performance platform
 	        }
         }
        

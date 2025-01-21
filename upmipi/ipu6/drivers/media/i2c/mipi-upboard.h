@@ -80,6 +80,13 @@ static const struct dmi_system_id upmipi_dmi_table[] = {
 		},
 		.driver_data = (void*)&upxmtl_gpios,
 	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPX-ARL01"),
+		},
+		.driver_data = (void*)&upxmtl_gpios,
+	},	
 	{},
 };
 
