@@ -2265,13 +2265,12 @@ static int imx477_probe(struct i2c_client *client)
 	/* Request optional enable pin */
 	imx477->reset_gpio = devm_gpiod_get_optional(dev, "reset",
 						     GPIOD_OUT_HIGH);						  
+        dev_info(dev,"i2c adaptor nr:%d", client->adapter->nr);
         if(imx477->reset_gpio==NULL)
         {
 	        struct upmipi_gpios *gpio_info = mipi_upboard_gpios();
 	        if(gpio_info)
 	        {
-	            dev_info(dev,"i2c adaptor nr:%d", client->adapter->nr);
-	            //dev_info(dev,"number of gpios:%d", gpio_info->ngpio);
 	            switch(client->adapter->nr)
 	            {
 	                case 0:
@@ -2291,7 +2290,7 @@ static int imx477_probe(struct i2c_client *client)
 	                gpio_direction_output(gpio_info->gpios[3].offset+512, GPIOD_OUT_HIGH);         
                         break;	                
 	            }
-	            //udelay(10000);
+	            msleep(10); //wait for device ready, needed for good performance platform
 	        }
         }
         
