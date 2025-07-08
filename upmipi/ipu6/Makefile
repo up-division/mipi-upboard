@@ -39,8 +39,14 @@ KERNEL_SRC ?= /lib/modules/$(KVERSION)/build
 MODSRC := $(shell pwd)
 
 obj-$(CONFIG_IPU_BRIDGE) += drivers/media/pci/intel/ipu-bridge.o
-# obj-$(CONFIG_VIDEO_INTEL_IPU6)	+= ipu6/
+obj-$(CONFIG_VIDEO_INTEL_IPU6)	+= drivers/media/pci/intel/ipu6/
+obj-$(CONFIG_VIDEO_INTEL_IPU6)	+= drivers/media/pci/intel/ipu6/psys/
 obj-y += drivers/media/i2c/
+
+ccflags-y += -I$(srcpath)/$(src)/../../../../../include/
+ccflags-y += -I$(srcpath)/$(src)/psys/
+ccflags-y += -I$(srcpath)/$(src)/../
+ccflags-y += -I$(srcpath)/$(src)/
 
 all:
 	$(MAKE) -C $(KERNEL_SRC) M=$(MODSRC) modules
