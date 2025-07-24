@@ -1,15 +1,20 @@
 #!/bin/bash
 
-if  [ $# -eq 0 ] ; then
-echo "usage: capture.sh [DeviceName] [Port] [ISYS Capture Channel] [Resolution] [Format]"
-echo -e "ar0234 port0 example: capture.sh 'ar0234 0-0010' 0 0 1280x960 SGRBG10_1X10"
+if  [ $# -lt 5 ] ; then
+echo "usage: raw-capture.sh [DeviceName] [Port] [ISYS Capture Channel] [Resolution] [Format]"
+echo -e "ar0234 example: raw-capture.sh 'ar0234 0-0010' 0 0 1280x960 SGRBG10_1X10"
+echo -e "imx477 example: raw-capture.sh 'imx477 0-001a' 0 0 4056x3040 SRGGB12_1X12"
+echo -e "imx708 example: raw-capture.sh 'imx708' 0 0 4608x2592 SRGGB10_1X10"
 exit 1
 fi
 
 if [ ! -d mipi-up ]; then
-	./setup-venv.sh
-fi
+python -m venv mipi-up
 source mipi-up/bin/activate
+pip install -r requirement.txt
+else
+source mipi-up/bin/activate
+fi
 
 DEV=$1
 PORT=$2
@@ -21,6 +26,11 @@ WIDTH=${RESOLUTION%x*}
 HEIGHT=${RESOLUTION#*x}
 CSI2PORT="Intel IPU6 CSI2 $PORT"
 ISYSCAPTURE="Intel IPU6 ISYS Capture $ISYS"
+
+#modify imx477 capture width
+if [[ "$DEV" =~ "imx477" ]]; then
+WIDTH=$((WIDTH+8))
+fi
 
 #setting camera
 media-ctl -r
