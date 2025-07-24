@@ -45,7 +45,7 @@ gstreamer1.0-plugins-bad-apps \
 gstreamer1.0-plugins-bad \
 libgstreamer-plugins-bad1.0-0 \
 gstreamer1.0-plugins-ugly \
-libexpat1-dev libdrm-dev v4l-utils yavta
+libexpat1-dev libdrm-dev v4l-utils yavta python-is-python3 python3-venv
 
 ## user space library files
 sudo cp -r etc/* /etc/
