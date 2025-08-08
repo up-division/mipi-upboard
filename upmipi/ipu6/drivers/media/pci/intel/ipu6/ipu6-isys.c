@@ -24,6 +24,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/version.h>
 
 #include <media/ipu-bridge.h>
 #include <media/media-device.h>
@@ -1378,5 +1379,10 @@ MODULE_AUTHOR("Yunliang Ding <yunliang.ding@intel.com>");
 MODULE_AUTHOR("Hongju Wang <hongju.wang@intel.com>");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Intel IPU6 input system driver");
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 MODULE_IMPORT_NS(INTEL_IPU6);
 MODULE_IMPORT_NS(INTEL_IPU_BRIDGE);
+#else
+MODULE_IMPORT_NS("INTEL_IPU6");
+MODULE_IMPORT_NS("INTEL_IPU_BRIDGE");
+#endif

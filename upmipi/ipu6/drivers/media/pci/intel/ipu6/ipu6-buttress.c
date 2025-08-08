@@ -21,6 +21,7 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/time64.h>
+#include <linux/version.h>
 
 #include "ipu6.h"
 #include "ipu6-bus.h"
@@ -517,7 +518,11 @@ bool ipu6_buttress_auth_done(struct ipu6_device *isp)
 
 	return val == BUTTRESS_SECURITY_CTL_AUTH_DONE;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_buttress_auth_done, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_buttress_auth_done, "INTEL_IPU6");
+#endif
 
 int ipu6_buttress_reset_authentication(struct ipu6_device *isp)
 {
@@ -602,7 +607,11 @@ out:
 
 	return ret;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_buttress_map_fw_image, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_buttress_map_fw_image, "INTEL_IPU6");
+#endif
 
 void ipu6_buttress_unmap_fw_image(struct ipu6_bus_device *sys,
 				  struct sg_table *sgt)
@@ -610,7 +619,11 @@ void ipu6_buttress_unmap_fw_image(struct ipu6_bus_device *sys,
 	dma_unmap_sgtable(&sys->auxdev.dev, sgt, DMA_TO_DEVICE, 0);
 	sg_free_table(sgt);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_buttress_unmap_fw_image, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_buttress_unmap_fw_image, "INTEL_IPU6");
+#endif
 
 int ipu6_buttress_authenticate(struct ipu6_device *isp)
 {
@@ -775,7 +788,11 @@ int ipu6_buttress_start_tsc_sync(struct ipu6_device *isp)
 
 	return -ETIMEDOUT;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_buttress_start_tsc_sync, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_buttress_start_tsc_sync, "INTEL_IPU6");
+#endif
 
 void ipu6_buttress_tsc_read(struct ipu6_device *isp, u64 *val)
 {
@@ -797,7 +814,11 @@ void ipu6_buttress_tsc_read(struct ipu6_device *isp, u64 *val)
 	}
 	local_irq_restore(flags);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_buttress_tsc_read, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_buttress_tsc_read, "INTEL_IPU6");
+#endif
 
 u64 ipu6_buttress_tsc_ticks_to_ns(u64 ticks, const struct ipu6_device *isp)
 {
@@ -812,7 +833,11 @@ u64 ipu6_buttress_tsc_ticks_to_ns(u64 ticks, const struct ipu6_device *isp)
 	 */
 	return div_u64(ns, isp->buttress.ref_clk);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_buttress_tsc_ticks_to_ns, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_buttress_tsc_ticks_to_ns, "INTEL_IPU6");
+#endif
 
 void ipu6_buttress_restore(struct ipu6_device *isp)
 {

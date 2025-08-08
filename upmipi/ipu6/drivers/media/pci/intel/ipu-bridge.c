@@ -11,6 +11,7 @@
 #include <linux/property.h>
 #include <linux/string.h>
 #include <linux/workqueue.h>
+#include <linux/version.h>
 
 #include <media/ipu-bridge.h>
 #include <media/v4l2-fwnode.h>
@@ -333,7 +334,11 @@ int ipu_bridge_parse_ssdb(struct acpi_device *adev, struct ipu_sensor *sensor)
 
 	return 0;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu_bridge_parse_ssdb, INTEL_IPU_BRIDGE);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu_bridge_parse_ssdb, "INTEL_IPU_BRIDGE");
+#endif
 
 static void ipu_bridge_create_fwnode_properties(
 	struct ipu_sensor *sensor,
@@ -641,7 +646,11 @@ int ipu_bridge_instantiate_vcm(struct device *sensor)
 
 	return 0;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu_bridge_instantiate_vcm, INTEL_IPU_BRIDGE);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu_bridge_instantiate_vcm, "INTEL_IPU_BRIDGE");
+#endif
 
 static int ipu_bridge_instantiate_ivsc(struct ipu_sensor *sensor)
 {
@@ -892,7 +901,11 @@ err_free_bridge:
 
 	return ret;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu_bridge_init, INTEL_IPU_BRIDGE);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu_bridge_init, "INTEL_IPU_BRIDGE");
+#endif
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Intel IPU Sensors Bridge driver");

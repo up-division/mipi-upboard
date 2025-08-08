@@ -19,6 +19,7 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/types.h>
+#include <linux/version.h>
 
 #include <media/ipu-bridge.h>
 #include <media/ipu6-pci-table.h>
@@ -280,7 +281,11 @@ void ipu6_configure_spc(struct ipu6_device *isp,
 		ipu6_pkg_dir_configure_spc(isp, hw_variant, pkg_dir_idx, base,
 					   pkg_dir, pkg_dir_dma_addr);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_configure_spc, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_configure_spc, "INTEL_IPU6");
+#endif
 
 #define IPU6_ISYS_CSI2_NPORTS		4
 #define IPU6SE_ISYS_CSI2_NPORTS		4
@@ -836,7 +841,12 @@ static struct pci_driver ipu6_pci_driver = {
 
 module_pci_driver(ipu6_pci_driver);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 MODULE_IMPORT_NS(INTEL_IPU_BRIDGE);
+#else
+MODULE_IMPORT_NS("INTEL_IPU_BRIDGE");
+#endif
+
 MODULE_AUTHOR("Sakari Ailus <sakari.ailus@linux.intel.com>");
 MODULE_AUTHOR("Tianshu Qiu <tian.shu.qiu@intel.com>");
 MODULE_AUTHOR("Bingbu Cao <bingbu.cao@intel.com>");

@@ -1092,9 +1092,9 @@ void ipu_psys_handle_events(struct ipu_psys *psys)
 int ipu_psys_fh_init(struct ipu_psys_fh *fh)
 {
 	struct ipu_psys *psys = fh->psys;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 5)
+//#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 5)
 	struct device *dev = &psys->adev->auxdev.dev;
-#endif
+//#endif
 	struct ipu_psys_buffer_set *kbuf_set, *kbuf_set_tmp;
 	struct ipu_psys_scheduler *sched = &fh->sched;
 	int i;
@@ -1108,23 +1108,23 @@ int ipu_psys_fh_init(struct ipu_psys_fh *fh)
 		kbuf_set = kzalloc(sizeof(*kbuf_set), GFP_KERNEL);
 		if (!kbuf_set)
 			goto out_free_buf_sets;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
-		kbuf_set->kaddr = dma_alloc_attrs(&psys->adev->dev,
-						  IPU_PSYS_BUF_SET_MAX_SIZE,
-						  &kbuf_set->dma_addr,
-						  GFP_KERNEL,
-						  0);
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 5)
+//#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
+//		kbuf_set->kaddr = dma_alloc_attrs(&psys->adev->dev,
+//						  IPU_PSYS_BUF_SET_MAX_SIZE,
+//						  &kbuf_set->dma_addr,
+//						  GFP_KERNEL,
+//						  0);
+//#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 5)
 		kbuf_set->kaddr = dma_alloc_attrs(dev,
 						  IPU_PSYS_BUF_SET_MAX_SIZE,
 						  &kbuf_set->dma_addr,
 						  GFP_KERNEL, 0);
-#else
-		kbuf_set->kaddr = ipu6_dma_alloc(psys->adev,
-						 IPU_PSYS_BUF_SET_MAX_SIZE,
-						 &kbuf_set->dma_addr,
-						 GFP_KERNEL, 0);
-#endif
+//#else
+//		kbuf_set->kaddr = ipu6_dma_alloc(psys->adev,
+//						 IPU_PSYS_BUF_SET_MAX_SIZE,
+//						 &kbuf_set->dma_addr,
+//						 GFP_KERNEL, 0);
+//#endif
 		if (!kbuf_set->kaddr) {
 			kfree(kbuf_set);
 			goto out_free_buf_sets;
@@ -1138,14 +1138,14 @@ int ipu_psys_fh_init(struct ipu_psys_fh *fh)
 out_free_buf_sets:
 	list_for_each_entry_safe(kbuf_set, kbuf_set_tmp,
 				 &sched->buf_sets, list) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
-		dma_free_attrs(&psys->adev->dev,
-			       kbuf_set->size, kbuf_set->kaddr,
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 5)
+//#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
+//		dma_free_attrs(&psys->adev->dev,
+//			       kbuf_set->size, kbuf_set->kaddr,
+//#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 5)
 		dma_free_attrs(dev, kbuf_set->size, kbuf_set->kaddr,
-#else
-		ipu6_dma_free(psys->adev, kbuf_set->size, kbuf_set->kaddr,
-#endif
+//#else
+//		ipu6_dma_free(psys->adev, kbuf_set->size, kbuf_set->kaddr,
+//#endif
 			      kbuf_set->dma_addr, 0);
 		list_del(&kbuf_set->list);
 		kfree(kbuf_set);
@@ -1246,14 +1246,14 @@ int ipu_psys_fh_deinit(struct ipu_psys_fh *fh)
 
 	mutex_lock(&sched->bs_mutex);
 	list_for_each_entry_safe(kbuf_set, kbuf_set0, &sched->buf_sets, list) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
-		dma_free_attrs(&psys->adev->dev,
-			       kbuf_set->size, kbuf_set->kaddr,
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 5)
+//#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
+//		dma_free_attrs(&psys->adev->dev,
+//			       kbuf_set->size, kbuf_set->kaddr,
+//#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 5)
 		dma_free_attrs(dev, kbuf_set->size, kbuf_set->kaddr,
-#else
-		ipu6_dma_free(psys->adev, kbuf_set->size, kbuf_set->kaddr,
-#endif
+//#else
+//		ipu6_dma_free(psys->adev, kbuf_set->size, kbuf_set->kaddr,
+//#endif
 			      kbuf_set->dma_addr, 0);
 		list_del(&kbuf_set->list);
 		kfree(kbuf_set);

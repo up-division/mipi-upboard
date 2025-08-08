@@ -11,6 +11,7 @@
 #include <linux/math64.h>
 #include <linux/sizes.h>
 #include <linux/types.h>
+#include <linux/version.h>
 
 #include "ipu6.h"
 #include "ipu6-bus.h"
@@ -216,14 +217,22 @@ int ipu6_cpd_create_pkg_dir(struct ipu6_bus_device *adev, const void *src)
 
 	return 0;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_cpd_create_pkg_dir, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_cpd_create_pkg_dir, "INTEL_IPU6");
+#endif
 
 void ipu6_cpd_free_pkg_dir(struct ipu6_bus_device *adev)
 {
 	dma_free_attrs(&adev->auxdev.dev, adev->pkg_dir_size, adev->pkg_dir,
 		       adev->pkg_dir_dma_addr, 0);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_cpd_free_pkg_dir, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_cpd_free_pkg_dir, "INTEL_IPU6");
+#endif
 
 static int ipu6_cpd_validate_cpd(struct ipu6_device *isp, const void *cpd,
 				 unsigned long cpd_size,

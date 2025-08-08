@@ -10,6 +10,7 @@
 #include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/types.h>
+#include <linux/version.h>
 
 #include "ipu6-bus.h"
 #include "ipu6-fw-com.h"
@@ -261,7 +262,11 @@ void *ipu6_fw_com_prepare(struct ipu6_fw_com_cfg *cfg,
 
 	return ctx;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_prepare, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_prepare, "INTEL_IPU6");
+#endif
 
 int ipu6_fw_com_open(struct ipu6_fw_com_context *ctx)
 {
@@ -289,7 +294,11 @@ int ipu6_fw_com_open(struct ipu6_fw_com_context *ctx)
 
 	return 0;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_open, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_open, "INTEL_IPU6");
+#endif
 
 int ipu6_fw_com_close(struct ipu6_fw_com_context *ctx)
 {
@@ -307,7 +316,11 @@ int ipu6_fw_com_close(struct ipu6_fw_com_context *ctx)
 
 	return 0;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_close, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_close, "INTEL_IPU6");
+#endif
 
 int ipu6_fw_com_release(struct ipu6_fw_com_context *ctx, unsigned int force)
 {
@@ -320,7 +333,11 @@ int ipu6_fw_com_release(struct ipu6_fw_com_context *ctx, unsigned int force)
 	kfree(ctx);
 	return 0;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_release, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_release, "INTEL_IPU6");
+#endif
 
 bool ipu6_fw_com_ready(struct ipu6_fw_com_context *ctx)
 {
@@ -332,7 +349,11 @@ bool ipu6_fw_com_ready(struct ipu6_fw_com_context *ctx)
 
 	return state == SYSCOM_STATE_READY;
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_ready, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_fw_com_ready, "INTEL_IPU6");
+#endif
 
 void *ipu6_send_get_token(struct ipu6_fw_com_context *ctx, int q_nbr)
 {
@@ -360,7 +381,11 @@ void *ipu6_send_get_token(struct ipu6_fw_com_context *ctx, int q_nbr)
 
 	return (void *)(q->host_address + index * q->token_size);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_send_get_token, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_send_get_token, "INTEL_IPU6");
+#endif
 
 void ipu6_send_put_token(struct ipu6_fw_com_context *ctx, int q_nbr)
 {
@@ -373,7 +398,11 @@ void ipu6_send_put_token(struct ipu6_fw_com_context *ctx, int q_nbr)
 
 	writel(wr, q_dmem + FW_COM_WR_REG);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_send_put_token, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_send_put_token, "INTEL_IPU6");
+#endif
 
 void *ipu6_recv_get_token(struct ipu6_fw_com_context *ctx, int q_nbr)
 {
@@ -397,7 +426,11 @@ void *ipu6_recv_get_token(struct ipu6_fw_com_context *ctx, int q_nbr)
 
 	return (void *)(q->host_address + rd * q->token_size);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_recv_get_token, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_recv_get_token, "INTEL_IPU6");
+#endif
 
 void ipu6_recv_put_token(struct ipu6_fw_com_context *ctx, int q_nbr)
 {
@@ -410,4 +443,8 @@ void ipu6_recv_put_token(struct ipu6_fw_com_context *ctx, int q_nbr)
 
 	writel(rd, q_dmem + FW_COM_RD_REG);
 }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
 EXPORT_SYMBOL_NS_GPL(ipu6_recv_put_token, INTEL_IPU6);
+#else
+EXPORT_SYMBOL_NS_GPL(ipu6_recv_put_token, "INTEL_IPU6");
+#endif
