@@ -24,16 +24,9 @@ Content of this repository
 * camera sensor drivers
 * Intel ipu6 driver
 
-Setup enviroment & Install 
+Installation & User Manual 
 =============================================
-setup from upmipi folder by following command
-```
-./env_setup.sh
-```
-Sensor testing 
-=============================================
-1. BIOS Setup
----------------
-2. run script
+- [MIPI UPBOARD](https://github.com/up-division/mipi-upboard/wiki) 
+
 ---------------
 
