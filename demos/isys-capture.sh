@@ -2,9 +2,9 @@
 
 if  [ $# -lt 5 ] ; then
 echo "usage: raw-capture.sh [DeviceName] [Port] [ISYS Capture Channel] [Resolution] [Format]"
-echo -e "ar0234 example: raw-capture.sh 'ar0234 0-0010' 0 0 1280x960 SGRBG10_1X10"
-echo -e "imx477 example: raw-capture.sh 'imx477 0-001a' 0 0 4056x3040 SRGGB12_1X12"
-echo -e "imx708 example: raw-capture.sh 'imx708' 0 0 4608x2592 SRGGB10_1X10"
+echo -e "ar0234 example: isys-capture.sh 'ar0234 0-0010' 0 0 1280x960 SGRBG10_1X10"
+echo -e "imx477 example: isys-capture.sh 'imx477 0-001a' 0 0 4056x3040 SRGGB12_1X12"
+echo -e "imx708 example: isys-capture.sh 'imx708' 0 0 4608x2592 SRGGB10_1X10"
 exit 1
 fi
 
