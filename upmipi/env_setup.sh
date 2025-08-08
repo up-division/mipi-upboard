@@ -23,6 +23,7 @@ else
 fi
 
 ## build & install kernel modules
+sudo apt install build-essential
 cd ipu6
 make
 if [ $? -ne 0 ]
