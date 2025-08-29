@@ -5,6 +5,7 @@ Supported products
 =============================================
 * UP Xtreme i12
 * UP Xtreme i14
+* UP Xtreme ARL
 * UP Squared Pro 7000
 * UP Squared i12
 
