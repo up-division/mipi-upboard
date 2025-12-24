@@ -1,0 +1,3 @@
+*.bak
+demos/process/mipi-up/
+__pycache__/
