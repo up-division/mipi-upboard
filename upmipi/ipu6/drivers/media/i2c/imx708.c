@@ -1046,7 +1046,7 @@ static int imx708_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	try_fmt_meta->field = V4L2_FIELD_NONE;
 
 	/* Initialize try_crop */
-        try_crop = v4l2_subdev_state_get_crop(fh->state, IMAGE_PAD);
+    try_crop = v4l2_subdev_state_get_crop(fh->state, IMAGE_PAD);
 	try_crop->left = IMX708_PIXEL_ARRAY_LEFT;
 	try_crop->top = IMX708_PIXEL_ARRAY_TOP;
 	try_crop->width = IMX708_PIXEL_ARRAY_WIDTH;
