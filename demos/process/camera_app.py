@@ -22,14 +22,14 @@ SENSOR_PROFILES = {
     "ov5647": {
         "width": 2592,
         "height": 1944,
-        "pattern": "RGGB", # 根據您最後測試的結果
-        "black_level": 0,  # 0 為了保留暗部細節
-        "gamma": 1.7,      # 強力提亮
-        "gains": (ov_gain*1.2, ov_gain*1.0, ov_gain*1.2), # 高增益
+        "pattern": "RGGB", 
+        "black_level": 0,  
+        "gamma": 1.7,      
+        "gains": (ov_gain*1.2, ov_gain*1.0, ov_gain*1.2), 
         "bit_depth": 10
     },
     "imx708": {
-        "width": 1536,     # 預設 Binning 解析度
+        "width": 1536,     
         "height": 864,
         "pattern": "BGGR",
         "black_level": 64,
@@ -53,6 +53,7 @@ OPENCV_BAYER_CODE = {
     "BGGR": cv2.COLOR_BayerBG2BGR,
 }
 
+
 def get_stride(width):
     # Intel IPU6 64-byte alignment
     line_bytes = width * 2 
@@ -62,7 +63,6 @@ def get_stride(width):
     return width
 
 def get_resize_scale(w):
-    # 智慧縮放
     if w > 3000: return 0.25 
     elif w > 1000: return 0.5 
     return 1.0
@@ -76,16 +76,14 @@ def create_luts(black_level, r_gain, g_gain, b_gain, gamma, bit_depth):
     max_val = (1 << bit_depth) - 1
     x = x / max_val
     
-    # 【回歸標準公式】
-    # 這是您測試過 IMX219/708 正常的版本
-    # 對於 OV5647，我們透過將 gamma 參數設為 2.0 來達到同樣的提亮效果
+    # gamma計算
     if gamma > 0 and gamma != 1.0:
         x = np.power(x, 1.0 / gamma)
 
     lut_r = np.clip(x * r_gain * 255.0, 0, 255).astype(np.uint8)
     lut_g = np.clip(x * g_gain * 255.0, 0, 255).astype(np.uint8)
     lut_b = np.clip(x * b_gain * 255.0, 0, 255).astype(np.uint8)
-    return lut_b, lut_g, lut_r
+    return lut_r, lut_g, lut_b
 
 # ==========================================
 # 3. 主程式
@@ -104,8 +102,8 @@ def main():
     parser.add_argument("--height", type=int, default=None)
     parser.add_argument("--stride", type=int, default=0)
     
-    # 增加一個參數讓我們可以手動調整要跳過幾幀 (預設 10)
-    parser.add_argument("--skip-frames", type=int, default=2, help="Frames to skip before capture")
+    # 增加一個參數讓我們可以手動調整要跳過幾幀 (預設 3)
+    parser.add_argument("--skip-frames", type=int, default=3, help="Frames to skip before capture")
 
     args = parser.parse_args()
 
@@ -136,7 +134,7 @@ def main():
         print(f"Skipping first {args.skip_frames} frames...", file=sys.stderr)
 
     # 建立 LUT
-    lut_b, lut_g, lut_r = create_luts(black_level, r_gain, g_gain, b_gain, gamma, bit_depth)
+    lut_r, lut_g, lut_b = create_luts(black_level, r_gain, g_gain, b_gain, gamma, bit_depth)
 
     # IO Setup
     stdin_fd = sys.stdin.buffer
@@ -193,12 +191,11 @@ def main():
         # Modes Handling
         if args.mode == MODE_PICTURE:
             frame_counter += 1
-            # 顯示進度點點，讓使用者知道還活著
+            # 顯示進度點
             if frame_counter <= args.skip_frames:
                 print(".", end="", file=sys.stderr, flush=True)
                 continue # 跳過這一幀，不存檔
 
-            # 到了第 (skip_frames + 1) 幀，才執行存檔
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             filename = f"{args.sensor}_{width}x{height}_{timestamp}.jpg"
             cv2.imwrite(filename, disp)
