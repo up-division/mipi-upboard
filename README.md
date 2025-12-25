@@ -12,6 +12,8 @@ Supported products
 Supported camera sensors
 =============================================
 * AR0234
+* OV5647
+* IMX219
 * IMX477
 * IMX708
   
