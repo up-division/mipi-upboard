@@ -29,6 +29,8 @@
 #include <media/v4l2-image-sizes.h>
 #include <media/v4l2-mediabus.h>
 
+#include "mipi-upboard.h"
+
 /*
  * From the datasheet, "20ms after PWDN goes low or 20ms after RESETB goes
  * high if reset is inserted after PWDN goes high, host can access sensor's
@@ -1445,7 +1447,10 @@ static int ov5647_init_controls(struct ov5647 *sensor)
 	v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
 			  V4L2_CID_ANALOGUE_GAIN,
 			  16, 1023, 1, 128);
-
+//	/* min: 16 = 1.0x; max (10 bits); default: 32 = 2.0x. */
+//	v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
+//			  V4L2_CID_ANALOGUE_GAIN, 16, 1023, 1, 32);
+			  
 	/* ====== LINK_FREQ menu control (主要是給 IPU6 用) ====== */
 	sensor->link_freq = v4l2_ctrl_new_int_menu(
 		&sensor->ctrls,
@@ -1572,10 +1577,35 @@ static int ov5647_probe(struct i2c_client *client)
 
 	/* Request the power down GPIO asserted. */
 	sensor->pwdn = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(sensor->pwdn)) {
-		dev_err(dev, "Failed to get 'pwdn' gpio\n");
-		return -EINVAL;
+	if (sensor->pwdn==NULL) {
+		//dev_info(dev, "Failed to get 'pwdn' gpio\n");
+		//return -EINVAL;
+	        struct upmipi_gpios *gpio_info = mipi_upboard_gpios();
+	        if(gpio_info)
+	        {
+	            switch(client->adapter->nr)
+	            {
+	                case 0:
+	                case 1:
+	                case 2:
+	       	        gpio_request(gpio_info->gpios[0].offset+512, gpio_info->gpios[0].name);
+	                gpio_direction_output(gpio_info->gpios[0].offset+512, GPIOD_OUT_HIGH);         
+	       	        gpio_request(gpio_info->gpios[1].offset+512, gpio_info->gpios[1].name);
+	                gpio_direction_output(gpio_info->gpios[1].offset+512, GPIOD_OUT_HIGH);         
+	                break;
+	                case 3:
+	                case 4:
+	                case 5:
+	       	        gpio_request(gpio_info->gpios[2].offset+512, gpio_info->gpios[2].name);
+	                gpio_direction_output(gpio_info->gpios[2].offset+512, GPIOD_OUT_HIGH);         
+	       	        gpio_request(gpio_info->gpios[3].offset+512, gpio_info->gpios[3].name);
+	                gpio_direction_output(gpio_info->gpios[3].offset+512, GPIOD_OUT_HIGH);         
+                        break;	                
+	            }
+	            msleep(10); //wait for device ready, needed for good performance platform
+	        }		
 	}
+
 
 	mutex_init(&sensor->lock);
 
