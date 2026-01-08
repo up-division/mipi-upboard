@@ -36,6 +36,25 @@ const struct ctrl_gpio upxadl_ctrl_gpios[] = {
         },
 };
 
+const struct ctrl_gpio upadln_ctrl_gpios[] = {
+        {
+                .name = UPBOARD_CAM1_RESET,
+                .offset = 357,  //R5
+        },
+        {
+                .name = UPBOARD_CRD1_POWER_ENABLE,
+                .offset = 23,  //B23       
+        },
+        {
+                .name = UPBOARD_CAM2_RESET,
+                .offset = 75,  //A11        
+        },
+        {
+                .name = UPBOARD_CRD2_POWER_ENABLE,
+                .offset = 336, //E16  
+        },
+};
+
 const struct ctrl_gpio upxmtl_ctrl_gpios[] = {
         {
                 .name = UPBOARD_CAM1_RESET,
@@ -60,6 +79,11 @@ const struct upmipi_gpios upxadl_gpios = {
         .ngpio = ARRAY_SIZE(upxadl_ctrl_gpios),
 };
 
+const struct upmipi_gpios upadln_gpios = {
+        .gpios = upadln_ctrl_gpios,
+        .ngpio = ARRAY_SIZE(upxadl_ctrl_gpios),
+};
+
 const struct upmipi_gpios upxmtl_gpios = {
         .gpios = upxmtl_ctrl_gpios,
         .ngpio = ARRAY_SIZE(upxmtl_ctrl_gpios),
@@ -72,7 +96,63 @@ static const struct dmi_system_id upmipi_dmi_table[] = {
 			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPX-ADLP01"),
 		},
 		.driver_data = (void*)&upxadl_gpios,
-	},		
+	},	
+	{
+		.matches = { /* UP Xtreme i12 */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPS-ADLP01"),
+		},
+		.driver_data = (void*)&upxadl_gpios,
+	},	
+	{
+		.matches = { /* UP ADLN */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPN-ADLN01"),
+		},
+		.driver_data = (void*)&upadln_gpios,
+	},
+	{
+		.matches = { /* UP TWL */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPN-TWL01"),
+		},
+		.driver_data = (void*)&upadln_gpios,
+	},
+	{
+		.matches = { /* UP TWL */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPS-TWL01"),
+		},
+		.driver_data = (void*)&upadln_gpios,
+	},
+	{
+		.matches = { /* UP ASL */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPN-ASLH01"),
+		},
+		.driver_data = (void*)&upadln_gpios,
+	},
+	{
+		.matches = { /* UP ASL */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPN-EDGE-ASLH01"),
+		},
+		.driver_data = (void*)&upadln_gpios,
+	},
+	{
+		.matches = { /* UP ASL */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPS-ASL01"),
+		},
+		.driver_data = (void*)&upadln_gpios,
+	},
+	{
+		.matches = { /* UP ASL */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPS-ASL01"),
+		},
+		.driver_data = (void*)&upadln_gpios,
+	},
 	{
 		.matches = {
 			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
