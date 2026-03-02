@@ -23,6 +23,8 @@
 
 #include "max_des.h"
 
+#define FORMAT 0 // 0: uyvy 1: rgb888
+
 #define MAX96724_REG0				0x0
 
 #define MAX96724_REG6				0x6
@@ -397,161 +399,7 @@ static int max96724_enum_mbus_code(struct v4l2_subdev *sd,
 {
 	if (code->index > 0)
 		return -EINVAL;
-	code->code = MEDIA_BUS_FMT_UYVY8_1X16;
-	return 0;
-}
-
-/* 2. 獲取格式 */
-static int max96724_get_fmt(struct v4l2_subdev *sd,
-			    struct v4l2_subdev_state *state,
-			    struct v4l2_subdev_format *fmt)
-{
-	struct v4l2_mbus_framefmt *framefmt;
-	
-	framefmt = v4l2_subdev_state_get_format(state, fmt->pad);
-	
-	if (!framefmt->code) {
-		fmt->format.code = MEDIA_BUS_FMT_UYVY8_1X16;
-		fmt->format.width = 1920;
-		fmt->format.height = 1080;
-		fmt->format.field = V4L2_FIELD_NONE;
-		return 0;
-	}
-
-	fmt->format = *framefmt;
-	return 0;
-}
-
-/* 3. 設定格式 (Yes Man) */
-static int max96724_set_fmt(struct v4l2_subdev *sd,
-			    struct v4l2_subdev_state *state,
-			    struct v4l2_subdev_format *fmt)
-{
-	struct v4l2_mbus_framefmt *framefmt;
-
-	framefmt = v4l2_subdev_state_get_format(state, fmt->pad);
-	if (framefmt) {
-		*framefmt = fmt->format;
-	}
-	return 0;
-}
-
-/* 4. 設定路由 (Yes Man) */
-static int max96724_set_routing(struct v4l2_subdev *sd,
-				struct v4l2_subdev_state *state,
-				enum v4l2_subdev_format_whence which,
-				struct v4l2_subdev_krouting *routing)
-{
-	return v4l2_subdev_set_routing(sd, state, routing);
-}
-
-/* 5. [關鍵新增] 攔截啟動串流 (防止 Kernel Panic) */
-/* 把這段加在 max96724.c 的適當位置，並在 probe 中綁定 */
-
-static int max96724_enable_streams(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_state *state,
-				   u32 pad, u64 streams_mask)
-{
-    // struct media_pad *sink_pad;
-    // struct media_link *link;
-    // struct v4l2_subdev *source_sd;
-    // int ret;
-
-    // /* 1. 檢查 Pad 0 (Sink) 是否有連結 */
-    // sink_pad = &sd->entity.pads[0];
-    // if (!sink_pad) return 0;
-
-    // /* 2. 遍歷連結，尋找啟用的 Source */
-    // list_for_each_entry(link, &sink_pad->links, list) {
-    //     if ((link->flags & MEDIA_LNK_FL_ENABLED) && 
-    //         (link->source->entity->function == MEDIA_ENT_F_CAM_SENSOR || 
-    //          link->source->entity->function == MEDIA_ENT_F_VID_IF_BRIDGE)) {
-            
-    //         source_sd = media_entity_to_v4l2_subdev(link->source->entity);
-    //         if (source_sd) {
-    //             /* 3. 呼叫來源的 enable_streams */
-    //             /* 注意：這需要來源驅動也支援 streams API，如果沒有，改呼叫 s_stream */
-    //             if (source_sd->ops && source_sd->ops->pad && source_sd->ops->pad->enable_streams) {
-    //                 ret = v4l2_subdev_call(source_sd, pad, enable_streams, state, link->source->index, streams_mask);
-    //             } else {
-    //                 /* Fallback 到 s_stream (對傳統 Sensor 驅動有效) */
-    //                 ret = v4l2_subdev_call(source_sd, video, s_stream, 1);
-    //             }
-    //             if (ret && ret != -ENOIOCTLCMD) {
-    //                 // dev_warn(sd->dev, "Failed to enable source stream: %d\n", ret);
-    //             }
-    //         }
-    //     }
-    // }
-    return 0;
-}
-
-static int max96724_disable_streams(struct v4l2_subdev *sd,
-				    struct v4l2_subdev_state *state,
-				    u32 pad, u64 streams_mask)
-{
-    /* 實作類似 enable 的反向邏輯，呼叫 s_stream(0) */
-    /* 略，為了測試可先留空 */
-    return 0;
-}
-
-/* 6. 初始化狀態 (Active State Initialization) */
-static int max96724_init_state(struct v4l2_subdev *sd,
-			       struct v4l2_subdev_state *state)
-{
-	struct v4l2_mbus_framefmt *fmt;
-	struct v4l2_subdev_route routes[1];
-	struct v4l2_subdev_krouting routing;
-
-	/* Sink Pad 0 */
-	fmt = v4l2_subdev_state_get_format(state, 0);
-	if (fmt) {
-		fmt->code = MEDIA_BUS_FMT_UYVY8_1X16;
-		fmt->width = 1920;
-		fmt->height = 1080;
-		fmt->field = V4L2_FIELD_NONE;
-	}
-
-	/* Source Pad 4 */
-	fmt = v4l2_subdev_state_get_format(state, 4);
-	if (fmt) {
-		fmt->code = MEDIA_BUS_FMT_UYVY8_1X16;
-		fmt->width = 1920;
-		fmt->height = 1080;
-		fmt->field = V4L2_FIELD_NONE;
-	}
-
-	/* Route: 0 -> 4 */
-	routes[0].sink_pad = 0;
-	routes[0].sink_stream = 0;
-	routes[0].source_pad = 4;
-	routes[0].source_stream = 0;
-	routes[0].flags = V4L2_SUBDEV_ROUTE_FL_ACTIVE;
-
-	routing.num_routes = 1;
-	routing.routes = routes;
-
-	v4l2_subdev_set_routing(sd, state, &routing);
-
-	return 0;
-}
-
-/* 7. Frame Desc */
-static int max96724_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
-				   struct v4l2_mbus_frame_desc *fd)
-{
-	if (pad != 4)
-		return -EINVAL;
-
-	fd->type = V4L2_MBUS_FRAME_DESC_TYPE_CSI2;
-	fd->num_entries = 1;
-	fd->entry[0].stream = 0;
-	fd->entry[0].flags = V4L2_MBUS_FRAME_DESC_FL_LEN_MAX;
-	fd->entry[0].length = 0;
-	fd->entry[0].pixelcode = MEDIA_BUS_FMT_UYVY8_1X16;
-	fd->entry[0].bus.csi2.vc = 0; 
-	fd->entry[0].bus.csi2.dt = 0x1E; /* YUV422 8bit */
-
+	code->code = MEDIA_BUS_FMT_RGB888_1X24;
 	return 0;
 }
 
@@ -746,30 +594,19 @@ static int max96724_init_phy(struct max_des *des, struct max_des_phy *phy)
 			return ret;
 	}
 
-	if (!is_cphy && dpll_freq > 1500000000ull) {
-		/* Enable initial deskew with 2 x 32k UI. */
+	if (!is_cphy && (dpll_freq >= 1500000000ull || num_data_lanes == 4)) {
+		/* [關鍵修復] >= 1.5GHz 或 4-Lane 一律開啟 Deskew 校正 */
 		ret = regmap_write(priv->regmap, MAX96724_MIPI_TX3(index),
-				   MAX96724_MIPI_TX3_DESKEW_INIT_AUTO |
-				   MAX96724_MIPI_TX3_DESKEW_INIT_8X32K);
-		if (ret)
-			return ret;
-
-		/* Enable periodic deskew with 2 x 1k UI.. */
+				   MAX96724_MIPI_TX3_DESKEW_INIT_AUTO | MAX96724_MIPI_TX3_DESKEW_INIT_8X32K);
+		if (ret) return ret;
 		ret = regmap_write(priv->regmap, MAX96724_MIPI_TX4(index),
-				   MAX96724_MIPI_TX4_DESKEW_PER_AUTO |
-				   MAX96724_MIPI_TX4_DESKEW_PER_2K);
-		if (ret)
-			return ret;
+				   MAX96724_MIPI_TX4_DESKEW_PER_AUTO | MAX96724_MIPI_TX4_DESKEW_PER_2K);
+		if (ret) return ret;
 	} else {
-		/* Disable initial deskew. */
 		ret = regmap_write(priv->regmap, MAX96724_MIPI_TX3(index), 0x0);
-		if (ret)
-			return ret;
-
-		/* Disable periodic deskew. */
+		if (ret) return ret;
 		ret = regmap_write(priv->regmap, MAX96724_MIPI_TX4(index), 0x0);
-		if (ret)
-			return ret;
+		if (ret) return ret;
 	}
 
 	if (is_cphy) {
@@ -786,9 +623,17 @@ static int max96724_init_phy(struct max_des *des, struct max_des_phy *phy)
 			return ret;
 	}
 
+	dev_info(priv->dev, "[CAMERA/TPG] Applying Port A & 0xB4 Lane Swap\n");
+	regmap_write(priv->regmap, 0x08A0, 0x84); /* 2x4 Mode (Port A) */
+	regmap_write(priv->regmap, 0x08CA, 0x01); /* Pipe 0 -> Ctrl 1 */
+	regmap_write(priv->regmap, 0x08A3, 0xB4); /* D2/D3 swap */
+	regmap_write(priv->regmap, 0x08A5, 0x00);
+
 	/* Put DPLL block into reset. */
 	ret = regmap_clear_bits(priv->regmap, MAX96724_DPLL_0(index),
 				MAX96724_DPLL_0_CONFIG_SOFT_RST_N);
+
+				
 	if (ret)
 		return ret;
 
@@ -1179,31 +1024,102 @@ static int max96724_set_tpg(struct max_des *des,
 	struct max96724_priv *priv = des_to_priv(des);
 	struct max_serdes_tpg_timings timings = { 0 };
 	int ret;
+	
+	dev_info(priv->dev, "TPG entry: %ux%u interval=%u/%u code=0x%x dt=0x%x bpp=%u\n",
+         entry ? entry->width : 0, entry ? entry->height : 0,
+         entry ? entry->interval.numerator : 0, entry ? entry->interval.denominator : 0,
+         entry ? entry->code : 0, entry ? entry->dt : 0, entry ? entry->bpp : 0);
+
+	if (!entry) {
+		ret = max96724_set_tpg_mode(priv, NULL);
+		if (ret) return ret;
+		return regmap_clear_bits(priv->regmap, MAX96724_MIPI_PHY0,
+					 MAX96724_MIPI_PHY0_FORCE_CSI_OUT_EN);
+	}
 
 	ret = max_serdes_get_tpg_timings(entry, &timings);
-	if (ret)
-		return ret;
+	if (ret) return ret;
 
 	ret = max96724_set_tpg_timings(priv, &timings);
-	if (ret)
-		return ret;
+	if (ret) return ret;
 
 	ret = max96724_set_tpg_clk(priv, timings.clock);
-	if (ret)
-		return ret;
+	if (ret) return ret;
 
-	ret = max96724_set_tpg_mode(priv, entry);
-	if (ret)
-		return ret;
+	ret = max96724_set_tpg_mode(priv, true);
+	if (ret) return ret;
 
-	return regmap_assign_bits(priv->regmap, MAX96724_MIPI_PHY0,
-				  MAX96724_MIPI_PHY0_FORCE_CSI_OUT_EN, !!entry);
+	/* ========================================================== */
+	/* [HACK] The Holy Trinity: Port A + 0xB4 Swap + Software Override */
+	/* ========================================================== */
+	dev_info(priv->dev, "[HACK] 0xB4 Swap + 16bpp UYVY Override...\n");
+	regmap_write(priv->regmap, 0x08A0, 0x84); /* 2x4 Mode (Port A) */
+	regmap_write(priv->regmap, 0x08CA, 0x01); /* Pipe 0 -> Ctrl 1 */
+
+	/* 關閉所有舊版的 Mapping 映射 */
+	regmap_write(priv->regmap, 0x090B, 0x00);
+	regmap_write(priv->regmap, 0x090C, 0x00);
+	regmap_write(priv->regmap, 0x092D, 0x00);
+
+	/* 實體層線路校正：對調 D2/D3 (0xB4) 來迎合 AAEON 電路板 */
+	regmap_write(priv->regmap, 0x08A3, 0xB4); 
+	regmap_write(priv->regmap, 0x08A5, 0x00); 
+
+	/* 協議層校正：強制將 24bpp 截斷為 16bpp，並標上 UYVY (0x1E) */
+	regmap_write(priv->regmap, 0x040B, 0x10); /* soft_bpp_0 = 16 (0x10) */
+	regmap_write(priv->regmap, 0x040C, 0x00); /* soft_vc_0 = 0 */
+	regmap_write(priv->regmap, 0x040E, 0x1E); /* soft_dt_0 = 0x1E (UYVY) */
+	regmap_write(priv->regmap, 0x0456, 0x11); /* 啟用 Override */
+
+	return 0;
 }
 
+// static const struct max_serdes_tpg_entry max96724_tpg_entries[] = {
+// 	MAX_TPG_ENTRY_640X480P60_RGB888,
+// 	MAX_TPG_ENTRY_1920X1080P30_RGB888,
+// 	MAX_TPG_ENTRY_1920X1080P60_RGB888,
+// };
+
+
+/* [FIX] 將格式改為 UYVY (0x1E) 以匹配我們的設定 */
+/* 注意：width/height 也要確保是 1920x1080 */
+// static const struct max_serdes_tpg_entry max96724_tpg_entries[] = {
+// 	// 640x480 UYVY
+// 	{ 640, 480, { 1, 60 }, MEDIA_BUS_FMT_UYVY8_1X16, 0x1E, 16 }, 
+// 	// 1920x1080 UYVY @ 30fps (我們主要用這個)
+// 	{ 1920, 1080, { 1, 30 }, MEDIA_BUS_FMT_UYVY8_1X16, 0x1E, 16 }, 
+// 	// 1920x1080 UYVY @ 60fps
+// 	{ 1920, 1080, { 1, 60 }, MEDIA_BUS_FMT_UYVY8_1X16, 0x1E, 16 }, 
+// };
+
+// static const struct max_serdes_tpg_entry max96724_tpg_entries[] = {
+// 	{ 1920, 1080, { 1, 30 }, MEDIA_BUS_FMT_RGB888_1X24, 0x24, 24 }, 
+// };
+
+// static const struct max_serdes_tpg_entry max96724_tpg_entries[] = {
+// 	MAX_TPG_ENTRY_640X480P60_RGB888,      /* 這是 entry[0] */
+// 	MAX_TPG_ENTRY_1920X1080P30_RGB888,    /* 這是 entry[1] (我們 s_stream 裡呼叫的) */
+// 	MAX_TPG_ENTRY_1920X1080P60_RGB888,    /* 這是 entry[2] */
+// };
+
+// static const struct max_serdes_tpg_entry max96724_tpg_entries[] = {
+// 	MAX_TPG_ENTRY_640X480P60_RGB888,      /* 這是 entry[0] */
+// 	/* [修改] 這是 entry[1] (我們使用的 1080p30)，強制設定為 UYVY 16-bit */
+// 	{ 1920, 1080, { 1, 30 }, MEDIA_BUS_FMT_RGB888_1X24, 0x24, 24 },
+// 	MAX_TPG_ENTRY_1920X1080P60_RGB888,    /* 這是 entry[2] */
+// };
+
+// static const struct max_serdes_tpg_entry max96724_tpg_entries[] = {
+// 	MAX_TPG_ENTRY_640X480P60_RGB888,      
+// 	/* [修改] 這是 entry[1]，強制設定為 UYVY 8-bit (0x1E) */
+// 	{ 1920, 1080, { 1, 30 }, MEDIA_BUS_FMT_UYVY8_1X16, 0x1E, 16 },
+// 	MAX_TPG_ENTRY_1920X1080P60_RGB888,   
+// };
+
 static const struct max_serdes_tpg_entry max96724_tpg_entries[] = {
-	MAX_TPG_ENTRY_640X480P60_RGB888,
-	MAX_TPG_ENTRY_1920X1080P30_RGB888,
-	MAX_TPG_ENTRY_1920X1080P60_RGB888,
+	MAX_TPG_ENTRY_640X480P60_RGB888,      
+	{ 1920, 1080, { 1, 30 }, MEDIA_BUS_FMT_RGB888_1X24, 0x24, 24 }, /* entry[1] */
+	MAX_TPG_ENTRY_1920X1080P60_RGB888,    
 };
 
 static const struct max_des_ops max96724_ops = {
@@ -1280,147 +1196,107 @@ static const struct max96724_chip_info max96712_info = {
 /* ========================================================== */
 static int max96724_probe(struct i2c_client *client)
 {
-	struct device *dev = &client->dev;
-	struct max96724_priv *priv;
-	struct max_des_ops *ops;
-	int ret;
+    struct device *dev = &client->dev;
+    struct max96724_priv *priv;
+    struct max_des_ops *ops;
+    int ret;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv) return -ENOMEM;
+    priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+    if (!priv) return -ENOMEM;
 
-	ops = devm_kzalloc(dev, sizeof(*ops), GFP_KERNEL);
-	if (!ops) return -ENOMEM;
+    ops = devm_kzalloc(dev, sizeof(*ops), GFP_KERNEL);
+    if (!ops) return -ENOMEM;
 
-	priv->info = device_get_match_data(dev);
-	if (!priv->info) return -ENODEV;
+    priv->info = device_get_match_data(dev);
+    if (!priv->info) return -ENODEV;
 
-	priv->dev = dev;
-	priv->client = client;
-	i2c_set_clientdata(client, priv);
+    priv->dev = dev;
+    priv->client = client;
+    i2c_set_clientdata(client, priv);
 
-	priv->regmap = devm_regmap_init_i2c(client, &max96724_i2c_regmap);
-	if (IS_ERR(priv->regmap)) return PTR_ERR(priv->regmap);
+    priv->regmap = devm_regmap_init_i2c(client, &max96724_i2c_regmap);
+    if (IS_ERR(priv->regmap)) return PTR_ERR(priv->regmap);
 
-	/* GPIO 與上電流程 */
-	priv->gpiod_poc = devm_gpiod_get_optional(dev, "poc", GPIOD_OUT_LOW);
-	priv->gpiod_enable = devm_gpiod_get_optional(dev, "enable", GPIOD_OUT_LOW);
-	if (!priv->gpiod_enable || IS_ERR(priv->gpiod_enable))
-		priv->gpiod_enable = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
-	if (!priv->gpiod_enable || IS_ERR(priv->gpiod_enable))
-		priv->gpiod_enable = devm_gpiod_get_index_optional(dev, NULL, 0, GPIOD_OUT_LOW);
+    /* GPIO 與上電流程 */
+    priv->gpiod_poc = devm_gpiod_get_optional(dev, "poc", GPIOD_OUT_LOW);
+    priv->gpiod_enable = devm_gpiod_get_optional(dev, "enable", GPIOD_OUT_LOW);
+    if (!priv->gpiod_enable || IS_ERR(priv->gpiod_enable))
+        priv->gpiod_enable = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+    if (!priv->gpiod_enable || IS_ERR(priv->gpiod_enable))
+        priv->gpiod_enable = devm_gpiod_get_index_optional(dev, NULL, 0, GPIOD_OUT_LOW);
 
-	dev_info(dev, "MAX96724: Starting Power-On Sequence...\n");
-	if (priv->gpiod_poc) {
-		gpiod_set_value_cansleep(priv->gpiod_poc, 1);
-		msleep(300);
-	}
-	if (priv->gpiod_enable) {
-		gpiod_set_value_cansleep(priv->gpiod_enable, 0);
-		msleep(20);
-		gpiod_set_value_cansleep(priv->gpiod_enable, 1);
-		usleep_range(4000, 5000);
-	}
+    dev_info(dev, "MAX96724: Starting Power-On Sequence...now13\n");
+    if (priv->gpiod_poc) {
+        gpiod_set_value_cansleep(priv->gpiod_poc, 1);
+        msleep(300);
+    }
+    if (priv->gpiod_enable) {
+        gpiod_set_value_cansleep(priv->gpiod_enable, 0);
+        msleep(20);
+        gpiod_set_value_cansleep(priv->gpiod_enable, 1);
+        usleep_range(4000, 5000);
+    }
 
-	*ops = max96724_ops;
-	ops->versions = priv->info->versions;
-	ops->modes = priv->info->modes;
-	ops->num_pipes = priv->info->num_pipes;
-	ops->set_pipe_tunnel_enable = priv->info->set_pipe_tunnel_enable;
-	ops->set_pipe_phy = priv->info->set_pipe_phy;
-	ops->set_pipe_tunnel_phy = priv->info->set_pipe_tunnel_phy;
-	priv->des.ops = ops;
+    *ops = max96724_ops;
+    ops->versions = priv->info->versions;
+    ops->modes = priv->info->modes;
+    ops->num_pipes = priv->info->num_pipes;
+    ops->set_pipe_tunnel_enable = priv->info->set_pipe_tunnel_enable;
+    ops->set_pipe_phy = priv->info->set_pipe_phy;
+    ops->set_pipe_tunnel_phy = priv->info->set_pipe_tunnel_phy;
+    priv->des.ops = ops;
 
-	dev_info(dev, "  -> Attempting I2C communication...\n");
-	ret = max96724_reset(priv);
-	if (ret) {
-		dev_err(dev, "MAX96724 failed to reset/communicate! (ret=%d)\n", ret);
-		return ret;
-	}
+    dev_info(dev, "  -> Attempting I2C communication...\n");
+    ret = max96724_reset(priv);
+    if (ret) {
+        dev_err(dev, "MAX96724 failed to reset/communicate! (ret=%d)\n", ret);
+        return ret;
+    }
 
-	dev_info(dev, "MAX96724: Power-On Successful! Probing core...\n");
-	
-	ret = max_des_probe(client, &priv->des);
-	if (ret) return ret;
+    dev_info(dev, "MAX96724: Power-On Successful! Probing core...\n");
+    
+    ret = max_des_probe(client, &priv->des);
+    if (ret) return ret;
 
-	/* [Patch] 鏡像結構覆寫 Ops & 強制注入 Controls */
-	{
-		struct max_des_priv_mirror *internal_priv = (struct max_des_priv_mirror *)priv->des.priv;
-		struct v4l2_subdev *sd = &internal_priv->sd;
+    /* [FIX] 補上 PIXEL_RATE 和 LINK_FREQ，IPU6 需要這個才能計算頻寬 */
+    {
+        /* 1. 使用鏡像結構進行轉型，取得隱藏的 subdev */
+        struct max_des_priv_mirror *internal_priv = (struct max_des_priv_mirror *)priv->des.priv;
+        struct v4l2_subdev *sd = &internal_priv->sd;
+        
+        /* 2. 如果 ctrl_handler 沒初始化，幫它初始化 */
+        if (!sd->ctrl_handler) {
+            struct v4l2_ctrl_handler *hdl = devm_kzalloc(dev, sizeof(*hdl), GFP_KERNEL);
+            if (hdl) {
+                v4l2_ctrl_handler_init(hdl, 10);
+                sd->ctrl_handler = hdl;
+            }
+        }
 
-		if (sd->ops && sd->ops->pad) {
-			struct v4l2_subdev_ops *new_ops = devm_kzalloc(dev, sizeof(*new_ops), GFP_KERNEL);
-			struct v4l2_subdev_pad_ops *new_pad_ops = devm_kzalloc(dev, sizeof(*new_pad_ops), GFP_KERNEL);
-			struct v4l2_subdev_internal_ops *new_internal_ops = devm_kzalloc(dev, sizeof(*new_internal_ops), GFP_KERNEL);
-			
-			if (new_ops && new_pad_ops && new_internal_ops) {
-				*new_ops = *sd->ops;
-				*new_pad_ops = *sd->ops->pad;
-				if (sd->internal_ops) *new_internal_ops = *sd->internal_ops;
-				
-				/* 綁定函式 */
-				new_pad_ops->enum_mbus_code = max96724_enum_mbus_code;
-				new_pad_ops->get_fmt        = max96724_get_fmt;
-				new_pad_ops->set_fmt        = max96724_set_fmt;
-				new_pad_ops->set_routing    = max96724_set_routing;
-				new_pad_ops->get_frame_desc = max96724_get_frame_desc;
-				new_pad_ops->enable_streams = max96724_enable_streams; /* No-Crash */
-				new_pad_ops->disable_streams = max96724_disable_streams;
-				
-				new_internal_ops->init_state = max96724_init_state;
+        /* 3. 加入控制項 */
+        // if (sd->ctrl_handler) {
+        //     /* PIXEL_RATE: 600MHz (足夠涵蓋 1920x1080@30fps) */
+        //     v4l2_ctrl_new_std(sd->ctrl_handler, NULL, V4L2_CID_PIXEL_RATE,
+        //               375000000, 375000000, 1, 375000000);
 
-				new_ops->pad = new_pad_ops;
-				sd->ops = new_ops;
-				sd->internal_ops = new_internal_ops;
-				
-				dev_info(dev, "MAX96724: Patched Pad/Internal Ops (No-Crash Edition).\n");
+		if (sd->ctrl_handler) {
+            /* [FIX] 1920x1080@30fps VPG 的真實硬體時脈是 75MHz */
+            v4l2_ctrl_new_std(sd->ctrl_handler, NULL, V4L2_CID_PIXEL_RATE,
+                      75000000, 75000000, 1, 75000000);
+            
+            /* LINK_FREQ: 750MHz 保持不變 */
+            static const s64 link_freq_menu_items[] = { 750000000 };
+            v4l2_ctrl_new_int_menu(sd->ctrl_handler, NULL, V4L2_CID_LINK_FREQ,
+                           0, 0, link_freq_menu_items);
 
-				/* * [關鍵修復] 如果 sd->ctrl_handler 是空的，我們自己造一個！ 
-                 * 這保證了 PIXEL_RATE 一定會被加上去。
-                 */
-				if (!sd->ctrl_handler) {
-					struct v4l2_ctrl_handler *hdl = devm_kzalloc(dev, sizeof(*hdl), GFP_KERNEL);
-					if (hdl) {
-						v4l2_ctrl_handler_init(hdl, 10);
-						if (hdl->error) {
-							dev_err(dev, "MAX96724: Failed to init new ctrl handler\n");
-						} else {
-							sd->ctrl_handler = hdl;
-							dev_info(dev, "MAX96724: Created missing ctrl_handler.\n");
-						}
-					}
-				}
-
-				/* 現在 ctrl_handler 肯定存在了，加入控制項 */
-				if (sd->ctrl_handler) {
-					/* 設定 PIXEL_RATE 為 600MHz */
-					v4l2_ctrl_new_std(sd->ctrl_handler, NULL, V4L2_CID_PIXEL_RATE,
-							  600000000, 600000000, 1, 600000000);
-					
-					/* 設定 LINK_FREQ */
-					static const s64 link_freq_menu_items[] = { 450000000 };
-					v4l2_ctrl_new_int_menu(sd->ctrl_handler, NULL, V4L2_CID_LINK_FREQ,
-							       0, 0, link_freq_menu_items);
-
-					if (sd->ctrl_handler->error)
-						dev_err(dev, "MAX96724: Failed to add controls: %d\n", sd->ctrl_handler->error);
-					else
-						dev_info(dev, "MAX96724: Added PIXEL_RATE (600MHz) and LINK_FREQ.\n");
-				}
-
-				/* 手動強制執行一次初始化 */
-				{
-					struct v4l2_subdev_state *state;
-					state = v4l2_subdev_lock_and_get_active_state(sd);
-					if (state) {
-						max96724_init_state(sd, state);
-						v4l2_subdev_unlock_state(state);
-						dev_info(dev, "MAX96724: Forced active state initialization.\n");
-					}
-				}
-			}
-		}
-	}
-	return 0;
+            if (sd->ctrl_handler->error)
+                dev_err(dev, "MAX96724: Failed to add controls: %d\n", sd->ctrl_handler->error);
+            else
+                dev_info(dev, "MAX96724: [FIX] Added PIXEL_RATE and LINK_FREQ.\n");
+        }
+    }
+    
+    return 0;
 }
 
 static void max96724_remove(struct i2c_client *client)

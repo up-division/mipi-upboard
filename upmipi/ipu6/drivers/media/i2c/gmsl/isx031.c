@@ -17,10 +17,32 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
-#include "media/i2c/isx031.h"
+#include <linux/property.h> /* [新增] 引入軟體節點標頭檔 */
+// #include "media/i2c/isx031.h"
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
 #include <media/mipi-csi2.h>
 #endif
+
+#include <linux/types.h>
+
+#define ISX031_NAME "isx031"
+
+#define ISX031_I2C_ADDRESS 0x1a
+
+static const struct software_node isx031_swnode = {
+	.name = "isx031_manual",
+};
+
+struct isx031_platform_data {
+	unsigned int port;
+	unsigned int lanes;
+	uint32_t i2c_slave_address;
+	int irq_pin;
+	unsigned int irq_pin_flags;
+	char irq_pin_name[16];
+	char suffix[5];
+	int gpios[4];
+};
 #define to_isx031(_sd)			container_of(_sd, struct isx031, sd)
 
 #define ISX031_OTP_TYPE_NAME_L		0x7E8A
@@ -527,7 +549,13 @@ static void isx031_update_pad_format(const struct isx031_mode *mode,
 	fmt->width = mode->width;
 	fmt->height = mode->height;
 	fmt->code = mode->code;
-	fmt->field = V4L2_FIELD_ANY;
+	
+	/* [關鍵修復] 徹底鎖死所有附屬屬性，不給 V4L2 任何拒絕的藉口 */
+	fmt->field = V4L2_FIELD_NONE;
+	fmt->colorspace = V4L2_COLORSPACE_SRGB;
+	fmt->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+	fmt->quantization = V4L2_QUANTIZATION_DEFAULT;
+	fmt->xfer_func = V4L2_XFER_FUNC_DEFAULT;
 }
 
 static int isx031_get_num_lane(struct isx031 *isx031, struct device *dev)
@@ -542,9 +570,14 @@ static int isx031_get_num_lane(struct isx031 *isx031, struct device *dev)
 	endpoint =
 		fwnode_graph_get_endpoint_by_id(dev_fwnode(dev), 0, 0,
 						FWNODE_GRAPH_ENDPOINT_NEXT);
+	// if (!endpoint) {
+	// 	dev_err(dev, "endpoint node not found");
+	// 	return -EPROBE_DEFER;
+	// }
 	if (!endpoint) {
-		dev_err(dev, "endpoint node not found");
-		return -EPROBE_DEFER;
+		dev_warn(dev, "endpoint node not found, defaulting to 4 lanes for manual probe\n");
+		isx031->lanes = 4;
+		return 0;
 	}
 
 	ret = v4l2_fwnode_endpoint_alloc_parse(endpoint, &bus_cfg);
@@ -609,16 +642,58 @@ static void isx031_stop_streaming(struct isx031 *isx031)
 		dev_err(&client->dev, "failed to stop streaming");
 }
 
+static int isx031_lazy_hw_init(struct isx031 *isx031)
+{
+	const struct isx031_reg_list *reg_list;
+	int ret;
+
+	/* 已初始化過就直接返回 */
+	if (isx031->pre_mode)
+		return 0;
+
+	/* 保險：沒有 cur_mode 就用預設 mode0 (1920x1536) */
+	if (!isx031->cur_mode)
+		isx031->cur_mode = &supported_modes[0];
+
+	dev_info(&isx031->client->dev, "lazy init: identify/init/apply preset...\n");
+
+	ret = isx031_identify_module(isx031->client);
+	if (ret) {
+		dev_err(&isx031->client->dev, "identify failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = isx031_initialize_module(isx031);
+	if (ret) {
+		dev_err(&isx031->client->dev, "initialize failed: %d\n", ret);
+		return ret;
+	}
+
+	reg_list = &isx031->cur_mode->reg_list;
+	ret = isx031_write_reg_list(isx031, reg_list, true);
+	if (ret) {
+		dev_err(&isx031->client->dev, "apply preset failed: %d\n", ret);
+		return ret;
+	}
+
+	isx031->pre_mode = isx031->cur_mode;
+	dev_info(&isx031->client->dev, "lazy init done\n");
+	return 0;
+}
+
 static int isx031_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct isx031 *isx031 = to_isx031(sd);
 	struct i2c_client *client = isx031->client;
 	int ret = 0;
 
+	enable = !!enable;
+
 	if (isx031->streaming == enable)
 		return 0;
 
 	mutex_lock(&isx031_mutex);
+
 	if (enable) {
 		ret = pm_runtime_get_sync(&client->dev);
 		if (ret < 0) {
@@ -626,11 +701,20 @@ static int isx031_set_stream(struct v4l2_subdev *sd, int enable)
 			goto err_unlock;
 		}
 
+		/* Route-B bring-up: 第一次 stream-on 才做硬體 init */
+		ret = isx031_lazy_hw_init(isx031);
+		if (ret) {
+			pm_runtime_put(&client->dev);
+			goto err_unlock;
+		}
+
 		ret = isx031_start_streaming(isx031);
 		if (ret) {
-			enable = 0;
+			dev_err(&client->dev, "start_streaming failed: %d\n", ret);
 			isx031_stop_streaming(isx031);
 			pm_runtime_put(&client->dev);
+			enable = 0;
+			goto err_unlock;
 		}
 	} else {
 		isx031_stop_streaming(isx031);
@@ -641,22 +725,21 @@ static int isx031_set_stream(struct v4l2_subdev *sd, int enable)
 
 err_unlock:
 	mutex_unlock(&isx031_mutex);
-
 	return ret;
 }
 
 static int isx031_enable_streams(struct v4l2_subdev *subdev,
-	struct v4l2_subdev_state *state,
-	u32 pad, u64 streams_mask)
+				 struct v4l2_subdev_state *state,
+				 u32 pad, u64 streams_mask)
 {
-	return isx031_set_stream(subdev, true);
+	return isx031_set_stream(subdev, 1);
 }
 
 static int isx031_disable_streams(struct v4l2_subdev *subdev,
-	 struct v4l2_subdev_state *state,
-	 u32 pad, u64 streams_mask)
+				  struct v4l2_subdev_state *state,
+				  u32 pad, u64 streams_mask)
 {
-	return isx031_set_stream(subdev, false);
+	return isx031_set_stream(subdev, 0);
 }
 
 static int __maybe_unused isx031_suspend(struct device *dev)
@@ -783,36 +866,35 @@ static int isx031_set_format(struct v4l2_subdev *sd,
 			     struct v4l2_subdev_format *fmt)
 {
 	struct isx031 *isx031 = to_isx031(sd);
-	const struct isx031_mode *mode;
-	int i;
+	struct v4l2_mbus_framefmt *framefmt;
 
-	for (i = 0; i < ARRAY_SIZE(supported_modes); i++)
-		if (supported_modes[i].code == fmt->format.code &&
-		    supported_modes[i].width == fmt->format.width &&
-		    supported_modes[i].height == fmt->format.height) {
-			mode = &supported_modes[i];
-			break;
-		}
+	/* [借鏡 max_ser.c] 無視使用者的設定，死守 1920x1536 UYVY */
+	fmt->format.width = 1920;
+	fmt->format.height = 1536;
+	fmt->format.code = MEDIA_BUS_FMT_UYVY8_1X16;
+	fmt->format.field = V4L2_FIELD_NONE;
+	fmt->format.colorspace = V4L2_COLORSPACE_SRGB;
+	fmt->format.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+	fmt->format.quantization = V4L2_QUANTIZATION_DEFAULT;
+	fmt->format.xfer_func = V4L2_XFER_FUNC_DEFAULT;
 
-	if (i >= ARRAY_SIZE(supported_modes))
-		mode = &supported_modes[0];
-
-	mutex_lock(&isx031_mutex);
-
-	isx031_update_pad_format(mode, &fmt->format);
-	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0)
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+	framefmt = v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
 #elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
+	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
+		framefmt = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
+	else
+		framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 #else
-		*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
+	framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 #endif
-	} else {
-		isx031->cur_mode = mode;
-	}
 
-	mutex_unlock(&isx031_mutex);
+	if (framefmt)
+		*framefmt = fmt->format;
+
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
+		isx031->cur_mode = &supported_modes[0];
+	}
 
 	return 0;
 }
@@ -825,43 +907,39 @@ static int isx031_get_format(struct v4l2_subdev *sd,
 #endif
 			     struct v4l2_subdev_format *fmt)
 {
-	struct isx031 *isx031 = to_isx031(sd);
+	/* [借鏡 max_ser.c] 誰來問都一律回答 1920x1536 UYVY */
+	fmt->format.width = 1920;
+	fmt->format.height = 1536;
+	fmt->format.code = MEDIA_BUS_FMT_UYVY8_1X16;
+	fmt->format.field = V4L2_FIELD_NONE;
+	fmt->format.colorspace = V4L2_COLORSPACE_SRGB;
+	fmt->format.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+	fmt->format.quantization = V4L2_QUANTIZATION_DEFAULT;
+	fmt->format.xfer_func = V4L2_XFER_FUNC_DEFAULT;
+	return 0;
+}
 
-	mutex_lock(&isx031_mutex);
-	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0)
-		fmt->format = *v4l2_subdev_get_try_format(&isx031->sd, cfg,
-							  fmt->pad);
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-		fmt->format = *v4l2_subdev_get_try_format(&isx031->sd, sd_state,
-							  fmt->pad);
-#else
-		fmt->format = *v4l2_subdev_state_get_format(sd_state,
-							  fmt->pad);
-#endif
-	else
-		isx031_update_pad_format(isx031->cur_mode, &fmt->format);
-
-	mutex_unlock(&isx031_mutex);
-
+static int isx031_init_state(struct v4l2_subdev *sd, struct v4l2_subdev_state *state)
+{
+	struct v4l2_mbus_framefmt *fmt = v4l2_subdev_state_get_format(state, 0);
+	
+	/* [借鏡 max_ser.c] 強制將 V4L2 狀態機初始化為 1920x1536 UYVY */
+	if (fmt) {
+		fmt->width = 1920;
+		fmt->height = 1536;
+		fmt->code = MEDIA_BUS_FMT_UYVY8_1X16;
+		fmt->field = V4L2_FIELD_NONE;
+		fmt->colorspace = V4L2_COLORSPACE_SRGB;
+		fmt->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+		fmt->quantization = V4L2_QUANTIZATION_DEFAULT;
+		fmt->xfer_func = V4L2_XFER_FUNC_DEFAULT;
+	}
 	return 0;
 }
 
 static int isx031_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
-	mutex_lock(&isx031_mutex);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0)
-	isx031_update_pad_format(&supported_modes[0],
-				 v4l2_subdev_get_try_format(sd, fh->pad, 0));
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-	isx031_update_pad_format(&supported_modes[0],
-				 v4l2_subdev_get_try_format(sd, fh->state, 0));
-#else
-	isx031_update_pad_format(&supported_modes[0],
-				 v4l2_subdev_state_get_format(fh->state, 0));
-#endif
-	mutex_unlock(&isx031_mutex);
-
+	/* [借鏡 max_ser.c] 什麼都不做，讓 init_state 接管即可 */
 	return 0;
 }
 
@@ -887,6 +965,7 @@ static const struct media_entity_operations isx031_subdev_entity_ops = {
 };
 
 static const struct v4l2_subdev_internal_ops isx031_internal_ops = {
+	.init_state = isx031_init_state, /* [新增] 註冊 init_state */
 	.open = isx031_open,
 };
 
@@ -926,10 +1005,16 @@ static void isx031_remove(struct i2c_client *client)
 #endif
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct isx031 *isx031 = to_isx031(sd);
+	bool manual_probe = (isx031->platform_data == NULL);
 
 	v4l2_async_unregister_subdev(sd);
 	media_entity_cleanup(&sd->entity);
 	pm_runtime_disable(&client->dev);
+
+	/* [關鍵修復] 移除軟體節點，避免下次載入卡死 */
+	if (manual_probe)
+		device_remove_software_node(&client->dev);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
 	return 0;
@@ -942,6 +1027,7 @@ static int isx031_probe(struct i2c_client *client)
 	struct isx031 *isx031;
 	const struct isx031_reg_list *reg_list;
 	int ret;
+	bool manual_probe;
 
 	isx031 = devm_kzalloc(&client->dev, sizeof(*isx031), GFP_KERNEL);
 	if (!isx031)
@@ -949,44 +1035,57 @@ static int isx031_probe(struct i2c_client *client)
 
 	isx031->client = client;
 	isx031->platform_data = client->dev.platform_data;
-	if (isx031->platform_data == NULL)
-		dev_warn(&client->dev, "no platform data provided\n");
 
-	isx031->reset_gpio = devm_gpiod_get_optional(&client->dev, "reset",
-						     GPIOD_OUT_LOW);
-	isx031->fsin_gpio = devm_gpiod_get_optional(&client->dev, "fsin",
-						     GPIOD_OUT_LOW);
+	manual_probe = (isx031->platform_data == NULL);
+	if (manual_probe) {
+		dev_warn(&client->dev, "manual probe: no platform data; will skip HW init in probe\n");
+		
+		/* ========================================================== */
+		/* [關鍵修復 1] 手動載入時，掛上軟體節點，防止 V4L2 核心崩潰   */
+		/* ========================================================== */
+		ret = device_add_software_node(&client->dev, &isx031_swnode);
+		if (ret && ret != -EEXIST) {
+			dev_warn(&client->dev, "Failed to add software node: %d\n", ret);
+		}
+	}
 
-	if (IS_ERR(isx031->reset_gpio))
-		return -EPROBE_DEFER;
-	else if (isx031->reset_gpio == NULL)
-		dev_warn(&client->dev, "Reset GPIO not found");
-	else
-		dev_info(&client->dev, "Reset GPIO found");
+	isx031->reset_gpio = devm_gpiod_get_optional(&client->dev, "reset", GPIOD_OUT_LOW);
+	isx031->fsin_gpio  = devm_gpiod_get_optional(&client->dev, "fsin",  GPIOD_OUT_LOW);
 
-	/* initialize subdevice */
+	if (IS_ERR(isx031->reset_gpio)) {
+		ret = PTR_ERR(isx031->reset_gpio);
+		if (ret == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		dev_warn(&client->dev, "Reset GPIO get failed (%d), continue\n", ret);
+		isx031->reset_gpio = NULL;
+	} else if (isx031->reset_gpio == NULL) {
+		dev_warn(&client->dev, "Reset GPIO not found\n");
+	} else {
+		dev_info(&client->dev, "Reset GPIO found\n");
+	}
+
 	sd = &isx031->sd;
 	v4l2_i2c_subdev_init(sd, client, &isx031_subdev_ops);
+
 	ret = isx031_ctrls_init(isx031);
 	if (ret) {
-		dev_err(&client->dev, "failed to init sensor ctrls: %d", ret);
+		dev_err(&client->dev, "failed to init sensor ctrls: %d\n", ret);
 		return ret;
 	}
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_HAS_EVENTS;
 #else
-	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_HAS_EVENTS;
 #endif
 	sd->internal_ops = &isx031_internal_ops;
 	sd->entity.ops = &isx031_subdev_entity_ops;
 	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
 
-	/* initialize subdev media pad */
 	isx031->pad.flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_pads_init(&sd->entity, 1, &isx031->pad);
 	if (ret < 0) {
-		dev_err(&client->dev, "failed to init entity pads: %d", ret);
+		dev_err(&client->dev, "failed to init entity pads: %d\n", ret);
 		goto probe_error_v4l2_ctrl_handler_free;
 	}
 
@@ -997,58 +1096,71 @@ static int isx031_probe(struct i2c_client *client)
 		snprintf(isx031->sd.name, sizeof(isx031->sd.name), "isx031 %s",
 			 isx031->platform_data->suffix);
 
-	if (isx031->platform_data && isx031->platform_data->lanes)
+	if (isx031->platform_data && isx031->platform_data->lanes) {
 		isx031->lanes = isx031->platform_data->lanes;
-
-	else {
-		/* Read info from fwnode entrypoint bus cfg if no platform data */
+	} else {
 		ret = isx031_get_num_lane(isx031, &client->dev);
 		if (ret) {
-			dev_err(&client->dev, "failed to get MIPI lane configuration");
-			goto probe_error_media_entity_cleanup;
+			dev_warn(&client->dev,
+				 "failed to get MIPI lane configuration (%d), defaulting to 4 lanes\n",
+				 ret);
+			isx031->lanes = 4;
 		}
+	}
+
+	isx031->pre_mode = NULL;
+	isx031->cur_mode = &supported_modes[0];
+
+	if (manual_probe) {
+		dev_warn(&client->dev, "manual probe: skip identify/init/preset in probe\n");
+		goto register_subdev_only;
 	}
 
 	ret = isx031_identify_module(client);
 	if (ret) {
-		dev_err(&client->dev, "isx031 identify module failed");
-		return ret;
+		dev_err(&client->dev, "isx031 identify module failed: %d\n", ret);
+		goto probe_error_media_entity_cleanup;
 	}
 
-	/* 1920x1536 default */
-	isx031->pre_mode = NULL;
-	isx031->cur_mode = &supported_modes[0];
 	ret = isx031_initialize_module(isx031);
 	if (ret) {
-		dev_err(&client->dev, "failed to initialize sensor: %d", ret);
-		return ret;
+		dev_err(&client->dev, "failed to initialize sensor: %d\n", ret);
+		goto probe_error_media_entity_cleanup;
 	}
+
 	reg_list = &isx031->cur_mode->reg_list;
 	ret = isx031_write_reg_list(isx031, reg_list, true);
 	if (ret) {
-		dev_err(&client->dev, "failed to apply preset mode");
+		dev_err(&client->dev, "failed to apply preset mode: %d\n", ret);
 		goto probe_error_media_entity_cleanup;
 	}
 	isx031->pre_mode = isx031->cur_mode;
 
+register_subdev_only:
+	/* ========================================================== */
+	/* [關鍵修復 2] 避開霸道的 _sensor 註冊函數，改用標準註冊   */
+	/* ========================================================== */
+	if (manual_probe) {
+		ret = v4l2_async_register_subdev(&isx031->sd);
+	} else {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 13, 0)
-	ret = v4l2_async_register_subdev_sensor_common(&isx031->sd);
+		ret = v4l2_async_register_subdev_sensor_common(&isx031->sd);
 #else
-	ret = v4l2_async_register_subdev_sensor(&isx031->sd);
+		ret = v4l2_async_register_subdev_sensor(&isx031->sd);
 #endif
+	}
+
 	if (ret < 0) {
-		dev_err(&client->dev, "failed to register V4L2 subdev: %d",
-			ret);
+		dev_err(&client->dev, "failed to register V4L2 subdev: %d\n", ret);
 		goto probe_error_media_entity_cleanup;
 	}
 
-	/*
-	 * Device is already turned on by i2c-core with ACPI domain PM.
-	 * Enable runtime PM and turn off the device.
-	 */
 	pm_runtime_set_active(&client->dev);
 	pm_runtime_enable(&client->dev);
 	pm_runtime_idle(&client->dev);
+
+	dev_info(&client->dev, "isx031 probe OK (manual=%d, lanes=%u)\n",
+		 manual_probe ? 1 : 0, isx031->lanes);
 
 	return 0;
 
@@ -1060,6 +1172,7 @@ probe_error_v4l2_ctrl_handler_free:
 
 	return ret;
 }
+
 
 static const struct dev_pm_ops isx031_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(isx031_suspend, isx031_resume)

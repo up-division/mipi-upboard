@@ -24,6 +24,11 @@
 
 #include "max_ser.h"
 
+#define WR_REG(reg, val) do { \
+    int __r = regmap_write(priv->regmap, (reg), (val)); \
+    if (__r) { dev_err(dev, "reg 0x%04x write 0x%02x failed: %d\n", (reg), (val), __r); return __r; } \
+} while (0)
+
 /* [Config] Sensor I2C Address (7-bit) */
 #define SENSOR_ADDR 0x1a
 
@@ -231,7 +236,18 @@ static const struct isx031_reg isx031_res_reg[] = {
 	{ISX031_REG_LEN_08BIT, 0xBF0C, 0x00},
 	{ISX031_REG_LEN_08BIT, 0xBF0D, 0x00},
     /* Start Streaming */
-    {ISX031_REG_LEN_08BIT, 0x8A01, 0x80},
+	{ISX031_REG_LEN_08BIT, 0xBF0B, 0x06},
+	{ISX031_REG_LEN_08BIT, 0xBF0C, 0x00},
+	{ISX031_REG_LEN_08BIT, 0xBF0D, 0x00},
+
+	/* ======================================================= */
+	/* [必須補上] 設定 Drive Mode 並解除鎖定，相機才會開始送資料！ */
+	/* ======================================================= */
+	{ISX031_REG_LEN_08BIT, 0x8A00, 0x17}, /* Drive Mode: 4-Lane 30fps */
+	{ISX031_REG_LEN_08BIT, 0xBEF0, 0x53}, /* Unlock Mode */
+	
+	/* Start Streaming */
+	// {ISX031_REG_LEN_08BIT, 0x8A01, 0x80},
 };
 
 #define ISX031_OTP_TYPE_NAME_L		0x7E8A
@@ -1086,90 +1102,196 @@ free_init_name:
 
 static int max96717_probe(struct i2c_client *client)
 {
-    struct device *dev = &client->dev;
-    struct max96717_priv *priv;
-    struct max_ser_ops *ops;
-    int ret;
+	struct device *dev = &client->dev;
+	struct max96717_priv *priv;
+	struct max_ser_ops *ops;
+	int ret, i;
+	u32 val = 0;
 
-    dev_info(dev, "MAX96717: Starting Sensor Init Probe (Skip Wait Version)\n");
+	/* 是否在 probe 期間就強制打開 video pipeline（bring-up 可用；正式版建議移到 enable_streams） */
+	const bool force_video_on = false;
 
-    priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
-    if (!priv) return -ENOMEM;
-    ops = devm_kzalloc(dev, sizeof(*ops), GFP_KERNEL);
-    if (!ops) return -ENOMEM;
-    
-    priv->info = device_get_match_data(dev);
-    if (!priv->info) priv->info = &max96717_info;
-    
-    priv->dev = dev;
-    priv->client = client;
-    i2c_set_clientdata(client, priv);
-    priv->regmap = devm_regmap_init_i2c(client, &max96717_i2c_regmap);
-    if (IS_ERR(priv->regmap)) return PTR_ERR(priv->regmap);
-    
-    /* [Patch] Register Software Node */
-    ret = device_add_software_node(dev, &max96717_swnode);
-    if (ret) {
-        dev_err(dev, "Failed to add software node: %d\n", ret);
-        return ret;
-    }
+	/* 小工具：regmap write 失敗就直接退出，避免假成功 */
+	#define WR(reg, v) do { \
+		int __r = regmap_write(priv->regmap, (reg), (v)); \
+		if (__r) { \
+			dev_err(dev, "regmap_write 0x%04x=0x%02x failed: %d\n", (reg), (v), __r); \
+			ret = __r; \
+			goto err_swnode; \
+		} \
+	} while (0)
 
-    *ops = max96717_ops; 
-    priv->ser.ops = ops;
-    if (priv->info->modes & BIT(MAX_SERDES_GMSL_TUNNEL_MODE))
-        ops->set_tunnel_enable = max96717_set_tunnel_enable;
-    ops->modes = priv->info->modes;
-    ops->num_pipes = priv->info->num_pipes;
-    ops->num_dts_per_pipe = priv->info->num_dts_per_pipe;
-    ops->num_phys = priv->info->num_phys;
-    priv->ser.ops = ops;
-    
-    /* ========================================================== */
-    /* [Patch] 跳過 wait_for_device，直接相信 i2cdetect 的結果 */
-    /* ========================================================== */
-    // ret = max96717_wait_for_device(priv);
-    // if (ret) return ret;
-    dev_info(dev, "Skipping wait_for_device check to bypass -121 error...\n");
+	dev_info(dev, "MAX96717: probe start (robust)\n");
 
-    /* Attach driver */
-    ret = max_ser_probe(client, &priv->ser);
-    if (ret) return ret;
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
 
-    /* Verify ID & Initialize Sensor */
-    dev_info(dev, "Reading ID from 0x7E8A...\n");
-    
-    u8 addr_buf[2] = { 0x7E, 0x8A };
-    u8 data_buf[1] = { 0x00 };
-    struct i2c_msg msgs[2];
-    
-    msgs[0].addr = 0x1a; msgs[0].flags = 0; msgs[0].len = 2; msgs[0].buf = addr_buf;
-    msgs[1].addr = 0x1a; msgs[1].flags = I2C_M_RD; msgs[1].len = 1; msgs[1].buf = data_buf;
+	ops = devm_kzalloc(dev, sizeof(*ops), GFP_KERNEL);
+	if (!ops)
+		return -ENOMEM;
 
-    ret = i2c_transfer(client->adapter, msgs, 2);
-    
-    if (ret == 2 && data_buf[0] == 0x31) {
-        dev_info(dev, "ID MATCH (0x31)! Initializing ISX031...\n");
-        
-        ret = max96717_init_sensor(priv);
-        if (ret == 0) {
-             dev_info(dev, "ISX031 Initialization COMPLETED! Streaming should start.\n");
-        } else {
-             dev_err(dev, "ISX031 Initialization FAILED during register write.\n");
-        }
-        
-    } else {
-        dev_err(dev, "ID Mismatch or Read Failed (Got 0x%02x). Aborting init.\n", data_buf[0]);
-    }
+	priv->info = device_get_match_data(dev);
+	if (!priv->info)
+		priv->info = &max96717_info;
 
-    return 0;
+	priv->dev = dev;
+	priv->client = client;
+	i2c_set_clientdata(client, priv);
+
+	priv->regmap = devm_regmap_init_i2c(client, &max96717_i2c_regmap);
+	if (IS_ERR(priv->regmap))
+		return PTR_ERR(priv->regmap);
+
+	/* 可能重載時 swnode 還在，EEXIST 就當作成功 */
+	ret = device_add_software_node(dev, &max96717_swnode);
+	if (ret && ret != -EEXIST) {
+		dev_err(dev, "Failed to add software node: %d\n", ret);
+		return ret;
+	}
+
+	/* copy ops template */
+	*ops = max96717_ops;
+	if (priv->info->modes & BIT(MAX_SERDES_GMSL_TUNNEL_MODE))
+		ops->set_tunnel_enable = max96717_set_tunnel_enable;
+
+	ops->modes = priv->info->modes;
+	ops->num_pipes = priv->info->num_pipes;
+	ops->num_dts_per_pipe = priv->info->num_dts_per_pipe;
+	ops->num_phys = priv->info->num_phys;
+
+	priv->ser.ops = ops;
+
+	/* 先把 serializer subdev 掛起來（media entity / devnode 等） */
+	ret = max_ser_probe(client, &priv->ser);
+	if (ret) {
+		dev_err(dev, "max_ser_probe failed: %d\n", ret);
+		goto err_swnode;
+	}
+
+	/* ---------------------------
+	 * 1) 等 MAX96717 本體真的 ready（避免 link reset 期 NACK）
+	 *   用 regmap_read(0x0000) 當作 ping，失敗就 retry
+	 * --------------------------- */
+	for (i = 0; i < 100; i++) { /* ~2s */
+		ret = regmap_read(priv->regmap, 0x0000, &val);
+		if (!ret)
+			break;
+		msleep(20);
+	}
+	if (ret) {
+		dev_err(dev, "MAX96717 not responding (ping reg 0x0000) ret=%d\n", ret);
+		goto err_swnode;
+	}
+	dev_info(dev, "MAX96717 regmap responsive\n");
+
+	/* ---------------------------
+	 * 2) 執行 ser ops->init（非常建議；讓 I2C bridge / 기본設定就位）
+	 * --------------------------- */
+	if (priv->ser.ops && priv->ser.ops->init) {
+		ret = priv->ser.ops->init(&priv->ser);
+		if (ret) {
+			dev_err(dev, "ser ops->init failed: %d\n", ret);
+			goto err_swnode;
+		}
+		dev_info(dev, "MAX96717 ops->init done\n");
+	}
+
+	/* ---------------------------
+	 * 3) 讀 ISX031 ID（0x7E8A -> 0x31），遇到 -121/讀不到就 retry
+	 * --------------------------- */
+	{
+		u8 addr_buf[2] = { 0x7E, 0x8A };
+		u8 data_buf[1] = { 0x00 };
+		struct i2c_msg msgs[2];
+
+		msgs[0].addr  = 0x1a;
+		msgs[0].flags = 0;
+		msgs[0].len   = 2;
+		msgs[0].buf   = addr_buf;
+
+		msgs[1].addr  = 0x1a;
+		msgs[1].flags = I2C_M_RD;
+		msgs[1].len   = 1;
+		msgs[1].buf   = data_buf;
+
+		for (i = 0; i < 100; i++) { /* ~2s */
+			ret = i2c_transfer(client->adapter, msgs, 2);
+			if (ret == 2 && data_buf[0] == 0x31)
+				break;
+			/* ret<0 可能是 -EREMOTEIO(-121)，或 ret!=2 代表 NACK/短暫不穩 */
+			msleep(20);
+		}
+
+		if (!(ret == 2 && data_buf[0] == 0x31)) {
+			dev_err(dev, "ISX031 ID read failed (ret=%d val=0x%02x)\n", ret, data_buf[0]);
+			ret = -EREMOTEIO;
+			goto err_swnode;
+		}
+		dev_info(dev, "ISX031 ID MATCH (0x31)\n");
+	}
+
+	/* ---------------------------
+	 * 4) 初始化 ISX031（table write），失敗就回錯
+	 * --------------------------- */
+	// for (i = 0; i < 10; i++) {
+	// 	ret = max96717_init_sensor(priv);
+	// 	if (!ret)
+	// 		break;
+	// 	msleep(50);
+	// }
+	// if (ret) {
+	// 	dev_err(dev, "ISX031 init failed: %d\n", ret);
+	// 	goto err_swnode;
+	// }
+	// dev_info(dev, "ISX031 Initialization COMPLETED\n");
+
+	/* ---------------------------
+	 * 5) （可選）在 probe 直接開 video pipeline
+	 *   正式做法建議移到 enable_streams；但 bring-up 需要可先開
+	 * --------------------------- */
+	if (force_video_on) {
+		dev_info(dev, "Forcing MAX96717 Video Pipeline ON (probe)\n");
+
+		/* 以下寄存器意義依你的舊版本保留；任何一筆失敗都會回 error */
+		WR(0x0330, 0x00); /* MIPI_RX0: continuous clock */
+		WR(0x0331, 0x33); /* MIPI_RX1: 4 lanes enable */
+		WR(0x0332, 0xE4); /* lane map */
+		WR(0x0333, 0x44); /* lane map */
+		WR(0x0308, 0x64); /* enable MIPI RX port */
+
+		WR(0x0110, 0x08); /* VIDEO_TX0: auto BPP */
+		WR(0x005B, 0x00); /* force stream ID = 0 */
+		WR(0x0002, 0x43); /* enable Pipe Z */
+
+		dev_info(dev, "MAX96717 Hardware Valve OPEN (probe)\n");
+	}
+
+	dev_info(dev, "MAX96717 probe OK\n");
+	return 0;
+
+err_swnode:
+	/* 如果 add swnode 成功但後面失敗，要移除（避免下次 -EEXIST/殘留） */
+	device_remove_software_node(dev);
+	return ret;
+
+#undef WR
 }
 
+/* 在 max96717.c 中 */
 static void max96717_remove(struct i2c_client *client)
 {
 	struct max96717_priv *priv = i2c_get_clientdata(client);
 
-    device_remove_software_node(&client->dev); /* Cleanup software node */
+	/* 1. 先從核心移除 V4L2 Subdev，這會觸發 disconnect */
 	max_ser_remove(&priv->ser);
+	
+	/* 2. [關鍵] 稍微等一下，讓 Async 框架有時間反應並釋放資源 */
+	/* 雖然不優雅，但在手動 Probe 模式下能有效防止 Race Condition */
+	msleep(20); 
+
+	/* 3. 確定沒人用了，再拆掉 Software Node */
+	device_remove_software_node(&client->dev); 
 }
 
 static const struct of_device_id max96717_of_ids[] = {

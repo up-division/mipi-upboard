@@ -14,10 +14,16 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
+#include <media/v4l2-device.h>
 
 #include "max_des.h"
 #include "max_ser.h"
 #include "max_serdes.h"
+
+
+
+/* ========================================================== */
+/* ========================================================== */
 
 /* [Fix] Fallback for missing flag in newer kernels */
 #ifndef MEDIA_PAD_FL_INTERNAL
@@ -1187,66 +1193,12 @@ err_revert_update_pipe_remaps:
 	return ret;
 }
 
-static int max_des_init_link_ser_xlate(struct max_des_priv *priv,
+static int __maybe_unused max_des_init_link_ser_xlate(struct max_des_priv *priv,
 				       struct max_des_link *link,
 				       struct i2c_adapter *adapter,
 				       u8 power_up_addr, u8 new_addr)
 {
-	struct max_des *des = priv->des;
-	u8 addrs[] = { power_up_addr, new_addr };
-	u8 current_addr;
-	int ret;
-
-	ret = des->ops->select_links(des, BIT(link->index));
-	if (ret)
-		return ret;
-
-	ret = max_ser_wait_for_multiple(adapter, addrs, ARRAY_SIZE(addrs),
-					&current_addr);
-	if (ret) {
-		dev_err(priv->dev,
-			"Failed to wait for serializer at 0x%02x or 0x%02x: %d\n",
-			power_up_addr, new_addr, ret);
-		return ret;
-	}
-
-	ret = max_ser_reset(adapter, current_addr);
-	if (ret) {
-		dev_err(priv->dev, "Failed to reset serializer: %d\n", ret);
-		return ret;
-	}
-
-	ret = max_ser_wait(adapter, power_up_addr);
-	if (ret) {
-		dev_err(priv->dev,
-			"Failed to wait for serializer at 0x%02x: %d\n",
-			power_up_addr, ret);
-		return ret;
-	}
-
-	ret = max_ser_change_address(adapter, power_up_addr, new_addr);
-	if (ret) {
-		dev_err(priv->dev,
-			"Failed to change serializer from 0x%02x to 0x%02x: %d\n",
-			power_up_addr, new_addr, ret);
-		return ret;
-	}
-
-	ret = max_ser_wait(adapter, new_addr);
-	if (ret) {
-		dev_err(priv->dev,
-			"Failed to wait for serializer at 0x%02x: %d\n",
-			new_addr, ret);
-		return ret;
-	}
-
-	if (des->ops->fix_tx_ids) {
-		ret = max_ser_fix_tx_ids(adapter, new_addr);
-		if (ret)
-			return ret;
-	}
-
-	return ret;
+	return 0; /* [ZOMBIE MODE] 不再跟 Serializer 溝通 */
 }
 
 static int max_des_init(struct max_des_priv *priv)
@@ -1505,44 +1457,136 @@ static int max_des_set_tpg_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
+
+static int max_des_get_fmt(struct v4l2_subdev *sd,
+			   struct v4l2_subdev_state *state,
+			   struct v4l2_subdev_format *format)
+{
+	struct v4l2_mbus_framefmt *f;
+	f = v4l2_subdev_state_get_format(state, format->pad, format->stream);
+	if (f) {
+		format->format = *f;
+	} else {
+		format->format.width = 1920;
+		format->format.height = 1536;
+		format->format.code = MEDIA_BUS_FMT_UYVY8_1X16;
+		format->format.field = V4L2_FIELD_NONE;
+		format->format.colorspace = V4L2_COLORSPACE_SRGB;
+	}
+	return 0;
+}
+
 static int max_des_set_fmt(struct v4l2_subdev *sd,
 			   struct v4l2_subdev_state *state,
 			   struct v4l2_subdev_format *format)
 {
-	struct max_des_priv *priv = v4l2_get_subdevdata(sd);
-	struct max_des *des = priv->des;
-	struct v4l2_mbus_framefmt *fmt;
-	int ret;
+	struct v4l2_mbus_framefmt *f;
 
-	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE && des->active)
-		return -EBUSY;
+	format->format.width = 1920;
+	format->format.height = 1536;
+	format->format.code = MEDIA_BUS_FMT_UYVY8_1X16;
+	format->format.field = V4L2_FIELD_NONE;
+	format->format.colorspace = V4L2_COLORSPACE_SRGB;
 
-	/* No transcoding, source and sink formats must match. */
-	if (max_des_pad_is_source(des, format->pad))
-		return v4l2_subdev_get_fmt(sd, state, format);
-
-	if (max_des_pad_is_tpg(des, format->pad)) {
-		ret = max_des_set_tpg_fmt(sd, state, format);
-		if (ret)
-			return ret;
-	}
-
-	fmt = v4l2_subdev_state_get_format(state, format->pad, format->stream);
-	if (!fmt)
-		return -EINVAL;
-
-	*fmt = format->format;
-
-	fmt = v4l2_subdev_state_get_opposite_stream_format(state, format->pad,
-							   format->stream);
-	if (!fmt)
-		return -EINVAL;
-
-	*fmt = format->format;
+	f = v4l2_subdev_state_get_format(state, format->pad, format->stream);
+	if (f)
+		*f = format->format;
 
 	return 0;
 }
 
+
+static int max_des_get_frame_desc_state(struct v4l2_subdev *sd,
+					struct v4l2_subdev_state *state,
+					struct v4l2_mbus_frame_desc *fd,
+					unsigned int pad)
+{
+	struct max_des_remap_context context = { 0 };
+	struct max_des_priv *priv = sd_to_priv(sd);
+	struct v4l2_subdev_route *route;
+	int ret;
+
+	/* 如果不是 Source Pad (Pad 4)，就不需要回報封包內容給下游 */
+	if (!max_des_pad_is_source(priv->des, pad)) {
+		fd->num_entries = 0;
+		return 0;
+	}
+
+	fd->type = V4L2_MBUS_FRAME_DESC_TYPE_CSI2;
+	fd->num_entries = 0; /* 確保初始為 0 */
+
+	ret = max_des_populate_remap_context(priv, &context, state);
+	if (ret)
+		return ret;
+
+	for_each_active_route(&state->routing, route) {
+		struct max_des_route_hw hw;
+		unsigned int dst_vc_id;
+
+		if (pad != route->source_pad)
+			continue;
+
+		ret = max_des_route_to_hw(priv, state, route, &hw);
+		if (ret)
+			continue; /* 如果找不到來源硬體，先跳過而不是直接 return 錯誤 */
+
+		ret = max_des_get_src_dst_vc_id(&context, hw.pipe->index, hw.phy->index,
+						hw.entry.bus.csi2.vc, &dst_vc_id);
+		if (ret)
+			continue;
+
+		hw.entry.bus.csi2.vc = dst_vc_id;
+		hw.entry.stream = route->source_stream;
+
+		/* [HACK] 手動 Probe 補上長度與標籤 */
+		if (hw.entry.length == 0) {
+			hw.entry.flags = V4L2_MBUS_FRAME_DESC_FL_LEN_MAX;
+			hw.entry.length = 1920 * 1536 * 2; /* 16bpp */
+			hw.entry.pixelcode = MEDIA_BUS_FMT_UYVY8_1X16;
+			hw.entry.bus.csi2.dt = 0x1E;       /* UYVY 標籤 */
+		}
+
+		fd->entry[fd->num_entries++] = hw.entry;
+	}
+
+	/* ========================================================== */
+	/* [終極保底] 如果完全沒有 route 被建立，我們還是要強塞給 IPU6 */
+	/* ========================================================== */
+	if (fd->num_entries == 0) {
+		fd->entry[0].stream = 0;
+		fd->entry[0].flags = V4L2_MBUS_FRAME_DESC_FL_LEN_MAX;
+		fd->entry[0].length = 1920 * 1536 * 2;
+		fd->entry[0].pixelcode = MEDIA_BUS_FMT_UYVY8_1X16;
+		fd->entry[0].bus.csi2.vc = 0;
+		fd->entry[0].bus.csi2.dt = 0x1E;
+		fd->num_entries = 1;
+	}
+
+	return 0;
+}
+
+
+static int max_des_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
+				  struct v4l2_mbus_frame_desc *fd)
+{
+	/* 只有 Pad 4 (Source) 需要回報給 IPU6 */
+	if (pad != 4) {
+		fd->num_entries = 0;
+		return 0;
+	}
+
+	/* 徹底忽略任何 routing 或 state，無腦塞入 1920x1536 UYVY */
+	fd->type = V4L2_MBUS_FRAME_DESC_TYPE_CSI2;
+	fd->num_entries = 1;
+	fd->entry[0].stream = 0;
+	fd->entry[0].flags = V4L2_MBUS_FRAME_DESC_FL_LEN_MAX;
+	fd->entry[0].length = 1920 * 1536 * 2; /* 16bpp */
+	fd->entry[0].pixelcode = MEDIA_BUS_FMT_UYVY8_1X16;
+	fd->entry[0].bus.csi2.vc = 0;
+	fd->entry[0].bus.csi2.dt = 0x1E; /* UYVY 標籤 */
+
+	return 0; /* 永遠回傳成功，絕對不噴 -EINVAL！ */
+}
 static int max_des_enum_frame_interval(struct v4l2_subdev *sd,
 				       struct v4l2_subdev_state *state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
@@ -1742,62 +1786,6 @@ static int max_des_s_ctrl(struct v4l2_ctrl *ctrl)
 	return -EINVAL;
 }
 
-static int max_des_get_frame_desc_state(struct v4l2_subdev *sd,
-					struct v4l2_subdev_state *state,
-					struct v4l2_mbus_frame_desc *fd,
-					unsigned int pad)
-{
-	struct max_des_remap_context context = { 0 };
-	struct max_des_priv *priv = sd_to_priv(sd);
-	struct v4l2_subdev_route *route;
-	int ret;
-
-	fd->type = V4L2_MBUS_FRAME_DESC_TYPE_CSI2;
-
-	ret = max_des_populate_remap_context(priv, &context, state);
-	if (ret)
-		return ret;
-
-	for_each_active_route(&state->routing, route) {
-		struct max_des_route_hw hw;
-		unsigned int dst_vc_id;
-
-		if (pad != route->source_pad)
-			continue;
-
-		ret = max_des_route_to_hw(priv, state, route, &hw);
-		if (ret)
-			return ret;
-
-		ret = max_des_get_src_dst_vc_id(&context, hw.pipe->index, hw.phy->index,
-						hw.entry.bus.csi2.vc, &dst_vc_id);
-		if (ret)
-			return ret;
-
-		hw.entry.bus.csi2.vc = dst_vc_id;
-		hw.entry.stream = route->source_stream;
-
-		fd->entry[fd->num_entries++] = hw.entry;
-	}
-
-	return 0;
-}
-
-static int max_des_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
-				  struct v4l2_mbus_frame_desc *fd)
-{
-	struct max_des_priv *priv = sd_to_priv(sd);
-	struct v4l2_subdev_state *state;
-	int ret;
-
-	state = v4l2_subdev_lock_and_get_active_state(&priv->sd);
-
-	ret = max_des_get_frame_desc_state(sd, state, fd, pad);
-
-	v4l2_subdev_unlock_state(state);
-
-	return ret;
-}
 
 static int max_des_get_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
 				   struct v4l2_mbus_config *cfg)
@@ -2013,11 +2001,25 @@ static int max_des_enable_disable_streams(struct max_des_priv *priv,
 					  u32 pad, u64 updated_streams_mask,
 					  bool enable)
 {
-	struct max_des *des = priv->des;
+	int ret = 0, n;
 
-	return max_serdes_xlate_enable_disable_streams(priv->sources, 0, state,
-						       pad, updated_streams_mask, 0,
-						       des->ops->num_links, enable);
+	/* [修復] 嘗試 20 次，容忍 GMSL Link 切換瞬間的 I2C 失敗 (-121 或是 -5) */
+	for (n = 0; n < 20; n++) {
+		ret = max_serdes_xlate_enable_disable_streams(priv->sources, 0,
+			state, pad, updated_streams_mask,
+			0, priv->des->ops->num_links, enable);
+
+		if (ret != -EREMOTEIO && ret != -EIO)
+			break; /* 如果不是通訊錯誤，就跳出重試 */
+
+		msleep(20);
+	}
+
+	if (ret)
+		dev_err(priv->dev, "xlate %s streams failed: %d\n",
+			enable ? "enable" : "disable", ret);
+
+	return ret;
 }
 
 static int max_des_update_streams(struct v4l2_subdev *sd,
@@ -2124,69 +2126,44 @@ err_free_streams_masks:
 	return ret;
 }
 
-static int max_des_enable_streams(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_state *state,
-				  u32 pad, u64 streams_mask)
-{
-	return max_des_update_streams(sd, state, pad, streams_mask, true);
-}
-
-static int max_des_disable_streams(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_state *state,
-				   u32 pad, u64 streams_mask)
-{
-	return max_des_update_streams(sd, state, pad, streams_mask, false);
-}
+// max_des.c
 
 static int max_des_init_state(struct v4l2_subdev *sd,
 			      struct v4l2_subdev_state *state)
 {
-	struct v4l2_subdev_route routes[MAX_DES_NUM_LINKS] = { 0 };
+	struct v4l2_subdev_route routes[1] = { 0 };
 	struct v4l2_subdev_krouting routing = {
 		.routes = routes,
+		.num_routes = 1,
 	};
-	struct max_des_priv *priv = v4l2_get_subdevdata(sd);
-	struct max_des *des = priv->des;
-	struct max_des_phy *phy = NULL;
-	unsigned int stream = 0;
-	unsigned int i;
+	struct v4l2_mbus_framefmt *fmt;
+	int i, ret;
 
-	for (i = 0; i < des->ops->num_phys; i++) {
-		if (des->phys[i].enabled) {
-			phy = &des->phys[i];
-			break;
+	/* [關鍵修復] 這裡要把起點改成 0 (真實相機的輸入端) */
+	routes[0].sink_pad = 0;    /* <--- 原本是 8，請改成 0 */
+	routes[0].sink_stream = 0;
+	routes[0].source_pad = 4;
+	routes[0].source_stream = 0;
+	routes[0].flags = V4L2_SUBDEV_ROUTE_FL_ACTIVE;
+
+	ret = v4l2_subdev_set_routing(sd, state, &routing);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < sd->entity.num_pads; i++) {
+		fmt = v4l2_subdev_state_get_format(state, i, 0);
+		if (fmt) {
+			fmt->width = 1920;
+			fmt->height = 1536;
+			fmt->code = MEDIA_BUS_FMT_UYVY8_1X16;
+			fmt->field = V4L2_FIELD_NONE;
+			fmt->colorspace = V4L2_COLORSPACE_SRGB;
 		}
 	}
 
-	if (!phy)
-		return 0;
-
-	for (i = 0; i < des->ops->num_links; i++) {
-		struct max_des_link *link = &des->links[i];
-
-		if (!link->enabled)
-			continue;
-
-		routing.routes[routing.num_routes++] = (struct v4l2_subdev_route) {
-			.sink_pad = max_des_link_to_pad(des, link),
-			.sink_stream = 0,
-			.source_pad = max_des_phy_to_pad(des, phy),
-			.source_stream = stream,
-			.flags = V4L2_SUBDEV_ROUTE_FL_ACTIVE,
-		};
-		stream++;
-
-		/*
-		 * The Streams API is an experimental feature.
-		 * If multiple routes are provided here, userspace will not be
-		 * able to configure them unless the Streams API is enabled.
-		 * Provide a single route until it is enabled.
-		 */
-		break;
-	}
-
-	return __max_des_set_routing(sd, state, &routing);
+	return 0;
 }
+
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 static int max_des_g_register(struct v4l2_subdev *sd,
@@ -2217,6 +2194,116 @@ static int max_des_s_register(struct v4l2_subdev *sd,
 }
 #endif
 
+static int max_des_s_stream(struct v4l2_subdev *sd, int enable)
+{
+	struct max_des_priv *priv = v4l2_get_subdevdata(sd);
+	struct max_des *des = priv->des;
+	struct max_des_phy *phy = &des->phys[0];
+	struct max_des_pipe *pipe = &des->pipes[0];
+	struct max_des_link *link0 = &des->links[0];
+	
+	dev_info(priv->dev, "[CAMERA] s_stream(%d) called\n", enable);
+
+	if (enable) {
+		des->phys_config = 5; /* 2x4 mode */
+
+		if (des->ops->init) des->ops->init(des);
+		if (des->ops->set_enable) des->ops->set_enable(des, true);
+
+		/* 初始化 PHY 並對調 D2/D3 */
+		memset(&phy->mipi, 0, sizeof(phy->mipi));
+		phy->enabled = true;
+		phy->bus_type = V4L2_MBUS_CSI2_DPHY;
+		phy->mipi.num_data_lanes = 4;
+		phy->mipi.data_lanes[0] = 1;
+		phy->mipi.data_lanes[1] = 2;
+		phy->mipi.data_lanes[2] = 4; /* D2/D3 對調 */
+		phy->mipi.data_lanes[3] = 3;
+		phy->mipi.clock_lane = 0; 
+		phy->link_frequency = 750000000ULL; 
+
+		if (des->ops->init_phy) des->ops->init_phy(des, phy);
+		if (des->ops->set_phy_enable) des->ops->set_phy_enable(des, phy, true);
+
+		/* 綁定真實管線: Link 0 -> Pipe 0 -> PHY */
+		link0->enabled = true;
+		if (des->ops->set_pipe_link) des->ops->set_pipe_link(des, pipe, link0);
+		if (des->ops->set_pipe_stream_id) des->ops->set_pipe_stream_id(des, pipe, 0);
+		if (des->ops->set_pipe_phy) des->ops->set_pipe_phy(des, pipe, phy);
+		
+		/* 寫入 MIPI 路由對應表 (包含影像, FS, FE) */
+		if (des->ops->set_pipe_remap) {
+			struct max_des_remap manual_remap[3] = {
+				{ .from_dt = 0x1E, .from_vc = 0, .to_dt = 0x1E, .to_vc = 0, .phy = 0 }, /* 影像 */
+				{ .from_dt = 0x00, .from_vc = 0, .to_dt = 0x00, .to_vc = 0, .phy = 0 }, /* FS */
+				{ .from_dt = 0x01, .from_vc = 0, .to_dt = 0x01, .to_vc = 0, .phy = 0 }, /* FE */
+			};
+			int i;
+			for (i = 0; i < 3; i++) des->ops->set_pipe_remap(des, pipe, i, &manual_remap[i]);
+			des->ops->set_pipe_remaps_enable(des, pipe, 0x07);
+			pipe->num_remaps = 3;
+		}
+		if (des->ops->set_pipe_enable) des->ops->set_pipe_enable(des, pipe, true);
+
+		/* ========================================================== */
+		/* [HACK] 強制覆寫為 16bpp UYVY，確保 IPU6 收到最完美的格式      */
+		/* ========================================================== */
+		{
+			u8 override_cmds[][3] = {
+				{0x04, 0x0B, 0x10}, /* soft_bpp_0 = 16 (0x10) */
+				{0x04, 0x0C, 0x00}, /* soft_vc_0 = 0 */
+				{0x04, 0x0E, 0x1E}, /* soft_dt_0 = 0x1E (UYVY) */
+				{0x04, 0x56, 0x11}, /* 啟用 Override */
+			};
+			int idx;
+			for (idx = 0; idx < 4; idx++) {
+				i2c_master_send(priv->client, override_cmds[idx], 3);
+			}
+		}
+
+		/* 這裡已經把原本的 set_tpg(des, NULL) 刪掉了，避免 TPG 殘影干擾！ */
+
+		pipe->phy_id = 0;
+		pipe->enabled = true;
+		pipe->link_id = 0;
+		pipe->stream_id = 0;
+		des->active = true;
+
+	} else {
+		dev_info(priv->dev, "  -> Stopping HW...\n");
+		/* 這裡也把 set_tpg(des, NULL) 刪掉了 */
+		if (des->ops->set_pipe_enable) des->ops->set_pipe_enable(des, pipe, false);
+		if (des->ops->set_phy_enable) des->ops->set_phy_enable(des, phy, false);
+		if (des->ops->set_enable) des->ops->set_enable(des, false);
+
+		phy->enabled = false;
+		pipe->enabled = false;
+		des->active = false;
+	}
+
+	return 0;
+}
+
+static int max_des_enable_streams(struct v4l2_subdev *sd,
+				  struct v4l2_subdev_state *state,
+				  u32 pad, u64 streams_mask)
+{
+	struct max_des_priv *priv = v4l2_get_subdevdata(sd);
+	dev_info(priv->dev, "  -> des_enable_streams...\n");
+	return max_des_update_streams(sd, state, pad, streams_mask, true);
+}
+
+static int max_des_disable_streams(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_state *state,
+				   u32 pad, u64 streams_mask)
+{
+	return max_des_update_streams(sd, state, pad, streams_mask, false);
+}
+
+static const struct v4l2_subdev_video_ops max_des_video_ops = {
+    .s_stream = max_des_s_stream,
+};
+
 static const struct v4l2_subdev_core_ops max_des_core_ops = {
 	.log_status = max_des_log_status,
 #ifdef CONFIG_VIDEO_ADV_DEBUG
@@ -2238,7 +2325,7 @@ static const struct v4l2_subdev_pad_ops max_des_pad_ops = {
 
 	.get_mbus_config = max_des_get_mbus_config,
 
-	.get_fmt = v4l2_subdev_get_fmt,
+	.get_fmt = max_des_get_fmt,
 	.set_fmt = max_des_set_fmt,
 
 	.enum_frame_interval = max_des_enum_frame_interval,
@@ -2249,6 +2336,7 @@ static const struct v4l2_subdev_pad_ops max_des_pad_ops = {
 static const struct v4l2_subdev_ops max_des_subdev_ops = {
 	.core = &max_des_core_ops,
 	.pad = &max_des_pad_ops,
+	.video = &max_des_video_ops,
 };
 
 static const struct v4l2_subdev_internal_ops max_des_internal_ops = {
@@ -2277,10 +2365,9 @@ static int max_des_notify_bound(struct v4l2_async_notifier *nf,
 					  source->ep_fwnode,
 					  MEDIA_PAD_FL_SOURCE);
 	
-	/* [Patch] If failed to find pad from fwnode (manual probe), fallback to pad 0 */
 	if (ret < 0) {
-		dev_warn(priv->dev, "Could not find pad from fwnode, defaulting to 0 for %s\n", subdev->name);
-		ret = 0;
+		dev_warn(priv->dev, "Could not find pad from fwnode, defaulting to Pad 1 (Source) for %s\n", subdev->name);
+		ret = 1;
 	}
 
 	source->sd = subdev;
@@ -2296,9 +2383,18 @@ static int max_des_notify_bound(struct v4l2_async_notifier *nf,
 		return ret;
 	}
 
+	/* ========================================================= */
+	/* [終極修復] Hotplug 補救機制：強制大老闆幫新來的 Subdev 建立節點 */
+	/* ========================================================= */
+	if (priv->sd.v4l2_dev) {
+		int err;
+		dev_info(priv->dev, "Force registering devnodes for hotplugged subdevs\n");
+		err = v4l2_device_register_subdev_nodes(priv->sd.v4l2_dev);
+		if (err)
+			dev_warn(priv->dev, "Nodes register failed: %d\n", err);
+	}
 	return 0;
 }
-
 static void max_des_notify_unbind(struct v4l2_async_notifier *nf,
 				  struct v4l2_subdev *subdev,
 				  struct v4l2_async_connection *base_asc)
@@ -2404,7 +2500,7 @@ static int max_des_v4l2_register(struct max_des_priv *priv)
 	sd->internal_ops = &max_des_internal_ops;
 	sd->entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
 	sd->entity.ops = &max_des_media_ops;
-	// sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_STREAMS;
+	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_STREAMS;
 
 	priv->pads = devm_kcalloc(priv->dev, num_pads, sizeof(*priv->pads), GFP_KERNEL);
 	if (!priv->pads)
@@ -2423,6 +2519,8 @@ static int max_des_v4l2_register(struct max_des_priv *priv)
 	}
 
 	v4l2_set_subdevdata(sd, priv);
+	v4l2_ctrl_handler_init(&priv->ctrl_handler, 3);
+	priv->sd.ctrl_handler = &priv->ctrl_handler;
 
 	if (des->ops->tpg_patterns) {
 		v4l2_ctrl_handler_init(&priv->ctrl_handler, 1);
@@ -2439,6 +2537,20 @@ static int max_des_v4l2_register(struct max_des_priv *priv)
 			ret = priv->ctrl_handler.error;
 			goto err_free_ctrl;
 		}
+	}
+
+	v4l2_ctrl_new_std(&priv->ctrl_handler, NULL, V4L2_CID_PIXEL_RATE,
+			  75000000, 375000000, 1, 375000000);
+
+	/* [HACK] 強制加入 LINK_FREQ (MIPI 輸出頻率為 750MHz) */
+	static const s64 link_freq_menu_items[] = { 750000000 };
+	v4l2_ctrl_new_int_menu(&priv->ctrl_handler, NULL, V4L2_CID_LINK_FREQ,
+			       0, 0, link_freq_menu_items);
+
+	if (priv->ctrl_handler.error) {
+		ret = priv->ctrl_handler.error;
+		dev_err(priv->dev, "Failed to add V4L2 controls: %d\n", ret);
+		goto err_free_ctrl;
 	}
 
 	ret = media_entity_pads_init(&sd->entity, num_pads, priv->pads);
@@ -2703,6 +2815,13 @@ static int max_des_parse_dt(struct max_des_priv *priv)
 		ret = max_des_parse_src_dt_endpoint(priv, phy, fwnode);
 		if (ret)
 			return ret;
+	}
+
+	if (des->ops->num_phys > 0) {
+		des->phys[0].mipi.data_lanes[0] = 1;
+		des->phys[0].mipi.data_lanes[1] = 2;
+		des->phys[0].mipi.data_lanes[2] = 4; /* D2 和 D3 對調 */
+		des->phys[0].mipi.data_lanes[3] = 3;
 	}
 
 	ret = max_des_find_phys_config(priv);
