@@ -73,6 +73,8 @@ elif [[ "$DEV" == *"imx708"* ]]; then
     echo "Resetting Exposure (IMX708)..."
     v4l2-ctl -d $SUBDEV --set-ctrl exposure=1000 2>/dev/null
     v4l2-ctl -d $SUBDEV --set-ctrl analogue_gain=256 2>/dev/null
+    v4l2-ctl -d $SUBDEV --set-ctrl vertical_blanking=41 2>/dev/null
+
 else
     SENSOR_TYPE="imx219"
     echo "Resetting Exposure (IMX219)..."
