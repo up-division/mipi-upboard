@@ -604,21 +604,15 @@ out_err:
 
 static int isx031_start_streaming(struct isx031 *isx031)
 {
-	int ret;
 	struct i2c_client *client = isx031->client;
-	const struct isx031_reg_list *reg_list;
+	u32 state = 0;
+	int ret;
 
-	if (isx031->cur_mode != isx031->pre_mode) {
-		reg_list = &isx031->cur_mode->reg_list;
-		ret = isx031_write_reg_list(isx031, reg_list, true);
-		if (ret) {
-			dev_err(&client->dev, "failed to set stream mode");
-			return ret;
-		}
-		isx031->pre_mode = isx031->cur_mode;
-	} else {
-		dev_dbg(&client->dev, "same mode, skip write reg list");
-	}
+	/*
+	 * 關鍵：
+	 * 先不要再重寫 cur_mode->reg_list。
+	 * 目前懷疑這份 table 不適合 GMSL 模組版本。
+	 */
 
 	ret = __v4l2_ctrl_handler_setup(&isx031->ctrls);
 	if (ret) {
@@ -630,6 +624,23 @@ static int isx031_start_streaming(struct isx031 *isx031)
 	if (ret) {
 		dev_err(&client->dev, "failed to start streaming");
 		return ret;
+	}
+
+	ret = isx031_read_reg_state(client, &state);
+	if (ret) {
+		dev_err(&client->dev, "failed to read back sensor state after start");
+		return ret;
+	}
+
+	dev_info(&client->dev,
+		 "streaming state readback: 0x%02x (expect 0x%02x)\n",
+		 state, ISX031_STATE_STREAMING);
+
+	if (state != ISX031_STATE_STREAMING) {
+		dev_err(&client->dev,
+			"sensor did not enter streaming state, got 0x%02x\n",
+			state);
+		return -EIO;
 	}
 
 	return 0;
@@ -644,18 +655,18 @@ static void isx031_stop_streaming(struct isx031 *isx031)
 
 static int isx031_lazy_hw_init(struct isx031 *isx031)
 {
-	const struct isx031_reg_list *reg_list;
 	int ret;
 
 	/* 已初始化過就直接返回 */
 	if (isx031->pre_mode)
 		return 0;
 
-	/* 保險：沒有 cur_mode 就用預設 mode0 (1920x1536) */
+	/* 保險：沒有 cur_mode 就用預設 mode0 */
 	if (!isx031->cur_mode)
 		isx031->cur_mode = &supported_modes[0];
 
-	dev_info(&isx031->client->dev, "lazy init: identify/init/apply preset...\n");
+	dev_info(&isx031->client->dev,
+		 "lazy init(minimal): identify/init only, skip preset table\n");
 
 	ret = isx031_identify_module(isx031->client);
 	if (ret) {
@@ -669,15 +680,14 @@ static int isx031_lazy_hw_init(struct isx031 *isx031)
 		return ret;
 	}
 
-	reg_list = &isx031->cur_mode->reg_list;
-	ret = isx031_write_reg_list(isx031, reg_list, true);
-	if (ret) {
-		dev_err(&isx031->client->dev, "apply preset failed: %d\n", ret);
-		return ret;
-	}
-
+	/*
+	 * 關鍵：
+	 * 先不要再套用 cur_mode->reg_list。
+	 * 目前這份 reg table 原本是直連 MIPI host 的版本，
+	 * 對 GMSL 模組不一定適用。
+	 */
 	isx031->pre_mode = isx031->cur_mode;
-	dev_info(&isx031->client->dev, "lazy init done\n");
+	dev_info(&isx031->client->dev, "lazy init(minimal) done\n");
 	return 0;
 }
 
@@ -701,7 +711,6 @@ static int isx031_set_stream(struct v4l2_subdev *sd, int enable)
 			goto err_unlock;
 		}
 
-		/* Route-B bring-up: 第一次 stream-on 才做硬體 init */
 		ret = isx031_lazy_hw_init(isx031);
 		if (ret) {
 			pm_runtime_put(&client->dev);

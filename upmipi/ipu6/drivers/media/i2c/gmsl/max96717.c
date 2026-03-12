@@ -247,7 +247,7 @@ static const struct isx031_reg isx031_res_reg[] = {
 	{ISX031_REG_LEN_08BIT, 0xBEF0, 0x53}, /* Unlock Mode */
 	
 	/* Start Streaming */
-	// {ISX031_REG_LEN_08BIT, 0x8A01, 0x80},
+	{ISX031_REG_LEN_08BIT, 0x8A01, 0x80},
 };
 
 #define ISX031_OTP_TYPE_NAME_L		0x7E8A
@@ -339,19 +339,32 @@ static int max96717_init_sensor(struct max96717_priv *priv)
     int ret;
     struct device *dev = &priv->client->dev;
 
-    dev_info(dev, "Initializing ISX031 Sensor at 0x%02x...\n", SENSOR_ADDR);
+    dev_info(dev, "[SER] ==== Initializing ISX031 Sensor at 0x%02x ====\n", SENSOR_ADDR);
 
     /* Write Init Registers */
+    dev_info(dev, "[SER] Writing ISX031 init regs (%zu regs)...\n",
+	     ARRAY_SIZE(isx031_init_reg));
     ret = max96717_write_sensor_list(priv, isx031_init_reg, ARRAY_SIZE(isx031_init_reg));
-    if (ret) return ret;
+    if (ret) {
+	    dev_err(dev, "[SER] ISX031 init regs FAILED: %d\n", ret);
+	    return ret;
+    }
+    dev_info(dev, "[SER] ISX031 init regs OK\n");
 
     /* Write Resolution/Streaming Registers */
+    dev_info(dev, "[SER] Writing ISX031 res/stream regs (%zu regs, incl 0x8A01=0x80)...\n",
+	     ARRAY_SIZE(isx031_res_reg));
     ret = max96717_write_sensor_list(priv, isx031_res_reg, ARRAY_SIZE(isx031_res_reg));
-    if (ret) return ret;
+    if (ret) {
+	    dev_err(dev, "[SER] ISX031 res/stream regs FAILED at some point: %d\n", ret);
+	    return ret;
+    }
+    dev_info(dev, "[SER] ISX031 res/stream regs OK - Sensor should now be streaming!\n");
 
-    dev_info(dev, "ISX031 Sensor Initialized!\n");
+    dev_info(dev, "[SER] ==== ISX031 Sensor Initialized! ====\n");
     return 0;
 }
+
 
 static int max96717_wait_for_device(struct max96717_priv *priv)
 {
@@ -472,14 +485,41 @@ static int max96717_log_status(struct max_ser *ser)
 	unsigned int val;
 	int ret;
 
-	if (!(priv->info->modes & BIT(MAX_SERDES_GMSL_TUNNEL_MODE)))
-		return 0;
+	/* Pipe0 PCLK detect */
+	ret = regmap_read(priv->regmap, MAX96717_VIDEO_TX2(0), &val);
+	if (!ret) {
+		dev_info(priv->dev, "pclkdet: %u\n",
+			 !!(val & MAX96717_VIDEO_TX2_PCLKDET));
+	} else {
+		dev_warn(priv->dev, "read VIDEO_TX2 failed: %d\n", ret);
+	}
 
-	ret = regmap_read(priv->regmap, MAX96717_EXT23, &val);
-	if (ret)
-		return ret;
+	/* PHY packet count */
+	ret = regmap_read(priv->regmap, MAX96717_EXT21, &val);
+	if (!ret)
+		dev_info(priv->dev, "phy_pkt_cnt: %u\n", val);
+	else
+		dev_warn(priv->dev, "read EXT21 failed: %d\n", ret);
 
-	dev_info(priv->dev, "tun_pkt_cnt: %u\n", val);
+	/* CSI packet count */
+	ret = regmap_read(priv->regmap, MAX96717_EXT22, &val);
+	if (!ret)
+		dev_info(priv->dev, "csi_pkt_cnt: %u\n", val);
+	else
+		dev_warn(priv->dev, "read EXT22 failed: %d\n", ret);
+
+	/* Tunnel packet count if applicable */
+	if (priv->info->modes & BIT(MAX_SERDES_GMSL_TUNNEL_MODE)) {
+		ret = regmap_read(priv->regmap, MAX96717_EXT23, &val);
+		if (!ret)
+			dev_info(priv->dev, "tun_pkt_cnt: %u\n", val);
+	}
+
+	ret = regmap_read(priv->regmap, MAX96717_EXT24, &val);
+	if (!ret)
+		dev_info(priv->dev, "phy_clk_cnt: %u\n", val);
+	else
+		dev_warn(priv->dev, "read EXT24 failed: %d\n", ret);
 
 	return 0;
 }
@@ -886,12 +926,22 @@ static int max96717_init(struct max_ser *ser)
 	if (ret)
 		return ret;
 
+	/*
+	 * 只在 tunnel mode 時才開 tunnel。
+	 * 目前主線是 pixel mode，不要在 init 裡無條件切到 tunnel。
+	 */
 	if (ser->ops->set_tunnel_enable) {
-		ret = ser->ops->set_tunnel_enable(ser, true);
+		bool tunnel_en = ser->mode == MAX_SERDES_GMSL_TUNNEL_MODE;
+
+		ret = ser->ops->set_tunnel_enable(ser, tunnel_en);
 		if (ret)
 			return ret;
 	}
 
+	/*
+	 * 目前先保留 TPG init，因為它是 serializer 既有 init 流程的一部分。
+	 * 若後續懷疑 patgen side effect，再把它條件化。
+	 */
 	return max96717_init_tpg(ser);
 }
 
@@ -1108,20 +1158,19 @@ static int max96717_probe(struct i2c_client *client)
 	int ret, i;
 	u32 val = 0;
 
-	/* 是否在 probe 期間就強制打開 video pipeline（bring-up 可用；正式版建議移到 enable_streams） */
 	const bool force_video_on = false;
 
-	/* 小工具：regmap write 失敗就直接退出，避免假成功 */
 	#define WR(reg, v) do { \
 		int __r = regmap_write(priv->regmap, (reg), (v)); \
 		if (__r) { \
-			dev_err(dev, "regmap_write 0x%04x=0x%02x failed: %d\n", (reg), (v), __r); \
+			dev_err(dev, "regmap_write 0x%04x=0x%02x failed: %d\n", \
+				(reg), (v), __r); \
 			ret = __r; \
 			goto err_swnode; \
 		} \
 	} while (0)
 
-	dev_info(dev, "MAX96717: probe start (robust)\n");
+	dev_info(dev, "MAX96717: probe start (serializer only)\n");
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -1143,14 +1192,12 @@ static int max96717_probe(struct i2c_client *client)
 	if (IS_ERR(priv->regmap))
 		return PTR_ERR(priv->regmap);
 
-	/* 可能重載時 swnode 還在，EEXIST 就當作成功 */
 	ret = device_add_software_node(dev, &max96717_swnode);
 	if (ret && ret != -EEXIST) {
 		dev_err(dev, "Failed to add software node: %d\n", ret);
 		return ret;
 	}
 
-	/* copy ops template */
 	*ops = max96717_ops;
 	if (priv->info->modes & BIT(MAX_SERDES_GMSL_TUNNEL_MODE))
 		ops->set_tunnel_enable = max96717_set_tunnel_enable;
@@ -1162,18 +1209,14 @@ static int max96717_probe(struct i2c_client *client)
 
 	priv->ser.ops = ops;
 
-	/* 先把 serializer subdev 掛起來（media entity / devnode 等） */
 	ret = max_ser_probe(client, &priv->ser);
 	if (ret) {
 		dev_err(dev, "max_ser_probe failed: %d\n", ret);
 		goto err_swnode;
 	}
 
-	/* ---------------------------
-	 * 1) 等 MAX96717 本體真的 ready（避免 link reset 期 NACK）
-	 *   用 regmap_read(0x0000) 當作 ping，失敗就 retry
-	 * --------------------------- */
-	for (i = 0; i < 100; i++) { /* ~2s */
+	/* 等 serializer 本體 ready */
+	for (i = 0; i < 100; i++) {
 		ret = regmap_read(priv->regmap, 0x0000, &val);
 		if (!ret)
 			break;
@@ -1185,9 +1228,7 @@ static int max96717_probe(struct i2c_client *client)
 	}
 	dev_info(dev, "MAX96717 regmap responsive\n");
 
-	/* ---------------------------
-	 * 2) 執行 ser ops->init（非常建議；讓 I2C bridge / 기본設定就位）
-	 * --------------------------- */
+	/* 只做 serializer 自己的 init，不碰 sensor */
 	if (priv->ser.ops && priv->ser.ops->init) {
 		ret = priv->ser.ops->init(&priv->ser);
 		if (ret) {
@@ -1197,72 +1238,18 @@ static int max96717_probe(struct i2c_client *client)
 		dev_info(dev, "MAX96717 ops->init done\n");
 	}
 
-	/* ---------------------------
-	 * 3) 讀 ISX031 ID（0x7E8A -> 0x31），遇到 -121/讀不到就 retry
-	 * --------------------------- */
-	{
-		u8 addr_buf[2] = { 0x7E, 0x8A };
-		u8 data_buf[1] = { 0x00 };
-		struct i2c_msg msgs[2];
-
-		msgs[0].addr  = 0x1a;
-		msgs[0].flags = 0;
-		msgs[0].len   = 2;
-		msgs[0].buf   = addr_buf;
-
-		msgs[1].addr  = 0x1a;
-		msgs[1].flags = I2C_M_RD;
-		msgs[1].len   = 1;
-		msgs[1].buf   = data_buf;
-
-		for (i = 0; i < 100; i++) { /* ~2s */
-			ret = i2c_transfer(client->adapter, msgs, 2);
-			if (ret == 2 && data_buf[0] == 0x31)
-				break;
-			/* ret<0 可能是 -EREMOTEIO(-121)，或 ret!=2 代表 NACK/短暫不穩 */
-			msleep(20);
-		}
-
-		if (!(ret == 2 && data_buf[0] == 0x31)) {
-			dev_err(dev, "ISX031 ID read failed (ret=%d val=0x%02x)\n", ret, data_buf[0]);
-			ret = -EREMOTEIO;
-			goto err_swnode;
-		}
-		dev_info(dev, "ISX031 ID MATCH (0x31)\n");
-	}
-
-	/* ---------------------------
-	 * 4) 初始化 ISX031（table write），失敗就回錯
-	 * --------------------------- */
-	// for (i = 0; i < 10; i++) {
-	// 	ret = max96717_init_sensor(priv);
-	// 	if (!ret)
-	// 		break;
-	// 	msleep(50);
-	// }
-	// if (ret) {
-	// 	dev_err(dev, "ISX031 init failed: %d\n", ret);
-	// 	goto err_swnode;
-	// }
-	// dev_info(dev, "ISX031 Initialization COMPLETED\n");
-
-	/* ---------------------------
-	 * 5) （可選）在 probe 直接開 video pipeline
-	 *   正式做法建議移到 enable_streams；但 bring-up 需要可先開
-	 * --------------------------- */
 	if (force_video_on) {
 		dev_info(dev, "Forcing MAX96717 Video Pipeline ON (probe)\n");
 
-		/* 以下寄存器意義依你的舊版本保留；任何一筆失敗都會回 error */
-		WR(0x0330, 0x00); /* MIPI_RX0: continuous clock */
-		WR(0x0331, 0x33); /* MIPI_RX1: 4 lanes enable */
-		WR(0x0332, 0xE4); /* lane map */
-		WR(0x0333, 0x44); /* lane map */
-		WR(0x0308, 0x64); /* enable MIPI RX port */
+		WR(0x0330, 0x00);
+		WR(0x0331, 0x30);
+		WR(0x0332, 0xE4);
+		WR(0x0333, 0x44);
+		WR(0x0308, 0x64);
 
-		WR(0x0110, 0x08); /* VIDEO_TX0: auto BPP */
-		WR(0x005B, 0x00); /* force stream ID = 0 */
-		WR(0x0002, 0x43); /* enable Pipe Z */
+		WR(0x0110, 0x08);
+		WR(0x005B, 0x00);
+		WR(0x0002, 0x43);
 
 		dev_info(dev, "MAX96717 Hardware Valve OPEN (probe)\n");
 	}
@@ -1271,11 +1258,10 @@ static int max96717_probe(struct i2c_client *client)
 	return 0;
 
 err_swnode:
-	/* 如果 add swnode 成功但後面失敗，要移除（避免下次 -EEXIST/殘留） */
 	device_remove_software_node(dev);
 	return ret;
 
-#undef WR
+	#undef WR
 }
 
 /* 在 max96717.c 中 */

@@ -8,6 +8,7 @@
 #include <linux/delay.h>
 #include <linux/i2c-mux.h>
 #include <linux/module.h>
+#include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 
 #include <media/mipi-csi2.h>
@@ -15,6 +16,7 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 #include <media/v4l2-device.h>
+
 
 #include "max_des.h"
 #include "max_ser.h"
@@ -1193,14 +1195,67 @@ err_revert_update_pipe_remaps:
 	return ret;
 }
 
-static int __maybe_unused max_des_init_link_ser_xlate(struct max_des_priv *priv,
-				       struct max_des_link *link,
-				       struct i2c_adapter *adapter,
-				       u8 power_up_addr, u8 new_addr)
+static int __maybe_unused
+max_des_init_link_ser_xlate(struct max_des_priv *priv,
+			    struct max_des_link *link,
+			    struct i2c_adapter *adapter,
+			    u8 power_up_addr, u8 new_addr)
 {
-	return 0; /* [ZOMBIE MODE] 不再跟 Serializer 溝通 */
-}
+	struct max_des *des = priv->des;
+	struct i2c_msg msgs[2];
+	u8 reg_buf[2] = { 0x00, 0x00 }; /* REG0 */
+	u8 val = 0;
+	int ret;
+	int try;
 
+	if (!adapter)
+		return -ENODEV;
+
+	/*
+	 * 現在先走「乾淨 child-bus attach」：
+	 * - 不做 legacy magic write
+	 * - 不在這裡改 alias
+	 * - 只確認：在 des mux child bus 上，該 link 的 serializer
+	 *   是否真的可被 host 讀到
+	 */
+	if (des->ops->select_links) {
+		ret = des->ops->select_links(des, BIT(link->index));
+		if (ret) {
+			dev_err(priv->dev,
+				"[DES->SER] select_links(link=%u) failed: %d\n",
+				link->index, ret);
+			return ret;
+		}
+	}
+
+	msgs[0].addr  = power_up_addr;
+	msgs[0].flags = 0;
+	msgs[0].len   = sizeof(reg_buf);
+	msgs[0].buf   = reg_buf;
+
+	msgs[1].addr  = power_up_addr;
+	msgs[1].flags = I2C_M_RD;
+	msgs[1].len   = 1;
+	msgs[1].buf   = &val;
+
+	for (try = 0; try < 20; try++) {
+		ret = i2c_transfer(adapter, msgs, 2);
+		if (ret == 2) {
+			dev_info(priv->dev,
+				 "[DES->SER] link%u child-bus i2c-%d serializer alive at 0x%02x reg0=0x%02x\n",
+				 link->index, adapter->nr, power_up_addr, val);
+			return 0;
+		}
+
+		usleep_range(5000, 10000);
+	}
+
+	dev_warn(priv->dev,
+		 "[DES->SER] link%u serializer not reachable on child i2c-%d addr=0x%02x (ret=%d)\n",
+		 link->index, adapter->nr, power_up_addr, ret);
+
+	return (ret < 0) ? ret : -EREMOTEIO;
+}
 static int max_des_init(struct max_des_priv *priv)
 {
 	struct max_des *des = priv->des;
@@ -1297,6 +1352,7 @@ static int max_des_ser_attach_addr(struct max_des_priv *priv, u32 chan_id,
 {
 	struct max_des *des = priv->des;
 	struct max_des_link *link = &des->links[chan_id];
+	struct i2c_adapter *child_adap;
 	int i, min, max;
 	int ret = 0;
 
@@ -1308,15 +1364,31 @@ static int max_des_ser_attach_addr(struct max_des_priv *priv, u32 chan_id,
 		return -EINVAL;
 	}
 
+	if (!priv->mux || chan_id >= priv->mux->max_adapters ||
+	    !priv->mux->adapter[chan_id]) {
+		dev_err(priv->dev,
+			"[DES->SER] no child adapter for link %u\n", chan_id);
+		return -ENODEV;
+	}
+
+	child_adap = priv->mux->adapter[chan_id];
+
 	for (i = max; i >= min; i--) {
 		if (!(des->ops->versions & BIT(i)))
 			continue;
+
 		if (des->ops->set_link_version) {
 			ret = des->ops->set_link_version(des, link, i);
 			if (ret)
 				return ret;
 		}
-		ret = max_des_init_link_ser_xlate(priv, link, priv->client->adapter,
+
+		/*
+		 * 關鍵修正：
+		 * 以前這裡傳的是 priv->client->adapter（parent i2c-1）
+		 * 現在改成真正的 des child adapter。
+		 */
+		ret = max_des_init_link_ser_xlate(priv, link, child_adap,
 						  addr, alias);
 		if (!ret)
 			break;
@@ -1332,6 +1404,10 @@ static int max_des_ser_attach_addr(struct max_des_priv *priv, u32 chan_id,
 	link->ser_xlate.src = alias;
 	link->ser_xlate.dst = addr;
 	link->ser_xlate.en = true;
+
+	dev_info(priv->dev,
+		 "[DES->SER] attached link%u serializer on child i2c-%d addr=0x%02x\n",
+		 chan_id, child_adap->nr, addr);
 
 	return 0;
 }
@@ -1367,6 +1443,10 @@ static int max_des_i2c_mux_bus_notifier_call(struct notifier_block *nb,
 	if (chan_id == priv->mux->max_adapters)
 		return NOTIFY_DONE;
 
+	dev_info(priv->dev,
+		 "[DES] notifier: child i2c-%d addr=0x%02x bound on link %u\n",
+		 client->adapter->nr, client->addr, chan_id);
+
 	max_des_ser_attach_addr(priv, chan_id, client->addr, client->addr);
 	return NOTIFY_DONE;
 }
@@ -1387,8 +1467,26 @@ static int max_des_i2c_mux_init(struct max_des_priv *priv)
 	unsigned int i;
 	int ret;
 
-	if (des->ops->num_links == 1)
-		flags |= I2C_MUX_GATE;
+	/*
+	 * 關鍵修正：
+	 * 先不要使用 I2C_MUX_GATE。
+	 *
+	 * 目前實測顯示：
+	 * - des probe 時 parent bus 可正常讀 REG0
+	 * - ser/sensor 掛上去後，到第一次 stream 前
+	 *   des parent bus access 就變成 -121
+	 *
+	 * 在目前這種：
+	 *   des on parent bus
+	 *   ser manually instantiated on parent bus
+	 *   sensor on ser child mux bus
+	 * 的混合拓樸下，GATE 很可能把 des 的 parent-bus access 搞掉。
+	 *
+	 * 所以先只保留 I2C_MUX_LOCKED，不要 GATE。
+	 */
+	dev_info(priv->dev,
+		 "[MUX] init des i2c mux: parent=i2c-%d links=%u flags=0x%x (GATE disabled)\n",
+		 priv->client->adapter->nr, des->ops->num_links, flags);
 
 	priv->mux = i2c_mux_alloc(priv->client->adapter, priv->dev,
 				  des->ops->num_links, 0, flags,
@@ -1398,18 +1496,27 @@ static int max_des_i2c_mux_init(struct max_des_priv *priv)
 
 	priv->mux->priv = priv;
 	priv->i2c_nb.notifier_call = max_des_i2c_mux_bus_notifier_call;
+
 	ret = bus_register_notifier(&i2c_bus_type, &priv->i2c_nb);
 	if (ret)
 		return ret;
 
 	for (i = 0; i < des->ops->num_links; i++) {
 		struct max_des_link *link = &des->links[i];
+
 		if (!link->enabled)
 			continue;
+
 		ret = i2c_mux_add_adapter(priv->mux, 0, i);
 		if (ret)
 			goto err_add_adapters;
+
+		if (priv->mux->adapter[i])
+			dev_info(priv->dev,
+				 "[MUX] des child adapter[%u] -> i2c-%d\n",
+				 i, priv->mux->adapter[i]->nr);
 	}
+
 	return 0;
 
 err_add_adapters:
@@ -1427,6 +1534,50 @@ static int max_des_i2c_adapter_init(struct max_des_priv *priv)
 {
 	/* Always use Mux init */
 	return max_des_i2c_mux_init(priv);
+}
+
+/* Disable magic write */
+void max_des_legacy_child_bus_magic_write(struct max_des_priv *priv)
+{
+	// struct i2c_adapter *adap;
+	// struct i2c_msg msg;
+	// u8 buf[3];
+	// int ret;
+
+	// if (!priv->mux || !priv->mux->adapter[0]) {
+	// 	dev_warn(priv->dev,
+	// 		 "[LEGACY] child mux adapter[0] not ready, skip magic write\n");
+	// 	return -ENODEV;
+	// }
+
+	// adap = priv->mux->adapter[0];
+
+	// buf[0] = 0x00; /* reg high */
+	// buf[1] = 0x00; /* reg low  */
+	// buf[2] = 0x42; /* legacy magic value */
+
+	// msg.addr  = priv->client->addr; /* usually 0x27 */
+	// msg.flags = 0;
+	// msg.len   = sizeof(buf);
+	// msg.buf   = buf;
+
+	// ret = i2c_transfer(adap, &msg, 1);
+	// if (ret == 1) {
+	// 	dev_info(priv->dev,
+	// 		 "[LEGACY] child-bus magic write OK on i2c-%d addr=0x%02x reg=0x0000 val=0x42\n",
+	// 		 adap->nr, msg.addr);
+	// 	usleep_range(20, 50);
+	// 	return 0;
+	// }
+
+	// if (ret >= 0)
+	// 	ret = -EIO;
+
+	// dev_warn(priv->dev,
+	// 	 "[LEGACY] child-bus magic write failed on i2c-%d addr=0x%02x: %d\n",
+	// 	 adap->nr, msg.addr, ret);
+	
+	// return ret;
 }
 
 static int max_des_set_tpg_fmt(struct v4l2_subdev *sd,
@@ -1656,25 +1807,34 @@ static int max_des_log_status(struct v4l2_subdev *sd)
 	int ret;
 
 	v4l2_info(sd, "active: %u\n", des->active);
-	v4l2_info(sd, "mode: %s", max_serdes_gmsl_mode_str(des->mode));
+	v4l2_info(sd, "mode: %s\n", max_serdes_gmsl_mode_str(des->mode));
+
+	if (priv->unused_phy)
+		v4l2_info(sd, "unused_phy: %u\n", priv->unused_phy->index);
+	else
+		v4l2_info(sd, "unused_phy: none\n");
+
 	if (des->ops->set_tpg) {
 		const struct max_serdes_tpg_entry *entry = des->tpg_entry;
 
 		if (entry) {
-			v4l2_info(sd, "tpg: %ux%u@%u/%u, code: %u, dt: %u, bpp: %u\n",
+			v4l2_info(sd,
+				  "tpg: %ux%u@%u/%u, code: %u, dt: %u, bpp: %u\n",
 				  entry->width, entry->height,
 				  entry->interval.numerator,
 				  entry->interval.denominator,
-				  entry->code, entry->dt,  entry->bpp);
+				  entry->code, entry->dt, entry->bpp);
 		} else {
 			v4l2_info(sd, "tpg: disabled\n");
 		}
 	}
+
 	if (des->ops->log_status) {
 		ret = des->ops->log_status(des);
 		if (ret)
-			return ret;
+			v4l2_warn(sd, "log_status failed: %d\n", ret);
 	}
+
 	v4l2_info(sd, "\n");
 
 	for (i = 0; i < des->ops->num_links; i++) {
@@ -1688,8 +1848,10 @@ static int max_des_log_status(struct v4l2_subdev *sd)
 			continue;
 		}
 
-		v4l2_info(sd, "\tversion: %s\n", max_serdes_gmsl_version_str(link->version));
-		v4l2_info(sd, "\tser_xlate: en: %u, src: 0x%02x dst: 0x%02x\n",
+		v4l2_info(sd, "\tversion: %s\n",
+			  max_serdes_gmsl_version_str(link->version));
+		v4l2_info(sd,
+			  "\tser_xlate: en: %u, src: 0x%02x dst: 0x%02x\n",
 			  link->ser_xlate.en, link->ser_xlate.src,
 			  link->ser_xlate.dst);
 		v4l2_info(sd, "\n");
@@ -1697,17 +1859,26 @@ static int max_des_log_status(struct v4l2_subdev *sd)
 
 	for (i = 0; i < des->ops->num_pipes; i++) {
 		struct max_des_pipe *pipe = &des->pipes[i];
+		bool phy_invalid = false;
 
 		v4l2_info(sd, "pipe: %u\n", pipe->index);
 		v4l2_info(sd, "\tenabled: %u\n", pipe->enabled);
-		if (pipe->phy_id == des->ops->num_phys ||
-		    (priv->unused_phy && pipe->phy_id == priv->unused_phy->index))
+
+		if (pipe->phy_id == des->ops->num_phys)
+			phy_invalid = true;
+		else if (priv->unused_phy && pipe->phy_id == priv->unused_phy->index)
+			phy_invalid = true;
+
+		if (phy_invalid)
 			v4l2_info(sd, "\tphy_id: invalid\n");
 		else
 			v4l2_info(sd, "\tphy_id: %u\n", pipe->phy_id);
+
 		v4l2_info(sd, "\tlink_id: %u\n", pipe->link_id);
+
 		if (des->ops->set_pipe_stream_id)
 			v4l2_info(sd, "\tstream_id: %u\n", pipe->stream_id);
+
 		if (des->ops->set_pipe_mode) {
 			v4l2_info(sd, "\tdbl8: %u\n", pipe->mode.dbl8);
 			v4l2_info(sd, "\tdbl8mode: %u\n", pipe->mode.dbl8mode);
@@ -1715,29 +1886,42 @@ static int max_des_log_status(struct v4l2_subdev *sd)
 			v4l2_info(sd, "\tdbl10mode: %u\n", pipe->mode.dbl10mode);
 			v4l2_info(sd, "\tdbl12: %u\n", pipe->mode.dbl12);
 		}
+
 		if (des->ops->set_pipe_remap) {
 			v4l2_info(sd, "\tremaps: %u\n", pipe->num_remaps);
 			for (j = 0; j < pipe->num_remaps; j++) {
 				struct max_des_remap *remap = &pipe->remaps[j];
 
-				v4l2_info(sd, "\t\tremap: from: vc: %u, dt: 0x%02x\n",
+				v4l2_info(sd,
+					  "\t\tremap: from: vc: %u, dt: 0x%02x\n",
 					  remap->from_vc, remap->from_dt);
-				v4l2_info(sd, "\t\t       to:   vc: %u, dt: 0x%02x, phy: %u\n",
+				v4l2_info(sd,
+					  "\t\t       to:   vc: %u, dt: 0x%02x, phy: %u\n",
 					  remap->to_vc, remap->to_dt, remap->phy);
 			}
 		}
+
 		if (des->ops->set_pipe_vc_remap) {
 			v4l2_info(sd, "\tvc_remaps: %u\n", pipe->num_vc_remaps);
 			for (j = 0; j < pipe->num_vc_remaps; j++) {
-				v4l2_info(sd, "\t\tvc_remap: src: %u, dst: %u\n",
-					  pipe->vc_remaps[j].src, pipe->vc_remaps[j].dst);
+				v4l2_info(sd,
+					  "\t\tvc_remap: src: %u, dst: %u\n",
+					  pipe->vc_remaps[j].src,
+					  pipe->vc_remaps[j].dst);
 			}
 		}
-		if (des->ops->log_pipe_status) {
+
+		if (des->active && des->ops->log_pipe_status) {
 			ret = des->ops->log_pipe_status(des, pipe);
 			if (ret)
-				return ret;
+				v4l2_warn(sd,
+					  "\tlog_pipe_status(pipe %u) failed: %d\n",
+					  pipe->index, ret);
+		} else if (!des->active) {
+			v4l2_info(sd,
+				  "\t(device not active, skip HW pipe status)\n");
 		}
+
 		v4l2_info(sd, "\n");
 	}
 
@@ -1755,17 +1939,25 @@ static int max_des_log_status(struct v4l2_subdev *sd)
 		v4l2_info(sd, "\tlink_frequency: %llu\n", phy->link_frequency);
 		v4l2_info(sd, "\tnum_data_lanes: %u\n", phy->mipi.num_data_lanes);
 		v4l2_info(sd, "\tclock_lane: %u\n", phy->mipi.clock_lane);
+
 		if (des->ops->set_phy_mode) {
 			v4l2_info(sd, "\talt_mem_map8: %u\n", phy->mode.alt_mem_map8);
 			v4l2_info(sd, "\talt2_mem_map8: %u\n", phy->mode.alt2_mem_map8);
 			v4l2_info(sd, "\talt_mem_map10: %u\n", phy->mode.alt_mem_map10);
 			v4l2_info(sd, "\talt_mem_map12: %u\n", phy->mode.alt_mem_map12);
 		}
-		if (des->ops->log_phy_status) {
+
+		if (des->active && des->ops->log_phy_status) {
 			ret = des->ops->log_phy_status(des, phy);
 			if (ret)
-				return ret;
+				v4l2_warn(sd,
+					  "\tlog_phy_status(phy %u) failed: %d\n",
+					  phy->index, ret);
+		} else if (!des->active) {
+			v4l2_info(sd,
+				  "\t(device not active, skip HW phy status)\n");
 		}
+
 		v4l2_info(sd, "\n");
 	}
 
@@ -2197,89 +2389,211 @@ static int max_des_s_register(struct v4l2_subdev *sd,
 static int max_des_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct max_des_priv *priv = v4l2_get_subdevdata(sd);
+	struct i2c_client *client = priv->client;
 	struct max_des *des = priv->des;
 	struct max_des_phy *phy = &des->phys[0];
 	struct max_des_pipe *pipe = &des->pipes[0];
 	struct max_des_link *link0 = &des->links[0];
-	
-	dev_info(priv->dev, "[CAMERA] s_stream(%d) called\n", enable);
+	bool pm_acquired = false;
+	int ret = 0;
+	int i;
+
+	struct {
+		unsigned int delay_ms;
+		const char *tag;
+	} samples[] = {
+		{ 20,  "20ms"  },
+		{ 50,  "50ms"  },
+		{ 100, "100ms" },
+		{ 200, "200ms" },
+		{ 500, "500ms" },
+	};
+
+	dev_info(priv->dev, "[DES] s_stream(%d) called\n", enable);
 
 	if (enable) {
-		des->phys_config = 5; /* 2x4 mode */
+		if (pm_runtime_enabled(&client->dev)) {
+			ret = pm_runtime_resume_and_get(&client->dev);
+			if (ret < 0) {
+				dev_err(priv->dev,
+					"[DES] pm_runtime_resume_and_get failed: %d\n",
+					ret);
+				return ret;
+			}
+			pm_acquired = true;
+		}
 
-		if (des->ops->init) des->ops->init(des);
-		if (des->ops->set_enable) des->ops->set_enable(des, true);
+		/*
+		 * 依照 MAX96724 bring-up sequence：
+		 * 先完成 video pipe / VC-DT / DPHY / TX 相關設定，
+		 * 最後才讓 source 開始送圖。
+		 *
+		 * 這裡 s_stream(1) 的責任就是：
+		 * 1) 先把 des output path 準備好
+		 * 2) 但此時還沒讓 serializer/sensor start video
+		 */
+		des->phys_config = 5; /* 承接你目前有效的 2x4 配置 */
 
-		/* 初始化 PHY 並對調 D2/D3 */
+		link0->enabled = true;
+
 		memset(&phy->mipi, 0, sizeof(phy->mipi));
 		phy->enabled = true;
 		phy->bus_type = V4L2_MBUS_CSI2_DPHY;
 		phy->mipi.num_data_lanes = 4;
+		phy->mipi.clock_lane = 0;
 		phy->mipi.data_lanes[0] = 1;
 		phy->mipi.data_lanes[1] = 2;
-		phy->mipi.data_lanes[2] = 4; /* D2/D3 對調 */
-		phy->mipi.data_lanes[3] = 3;
-		phy->mipi.clock_lane = 0; 
-		phy->link_frequency = 750000000ULL; 
+		phy->mipi.data_lanes[2] = 3;
+		phy->mipi.data_lanes[3] = 4;
+		phy->link_frequency = 750000000ULL;
 
-		if (des->ops->init_phy) des->ops->init_phy(des, phy);
-		if (des->ops->set_phy_enable) des->ops->set_phy_enable(des, phy, true);
-
-		/* 綁定真實管線: Link 0 -> Pipe 0 -> PHY */
-		link0->enabled = true;
-		if (des->ops->set_pipe_link) des->ops->set_pipe_link(des, pipe, link0);
-		if (des->ops->set_pipe_stream_id) des->ops->set_pipe_stream_id(des, pipe, 0);
-		if (des->ops->set_pipe_phy) des->ops->set_pipe_phy(des, pipe, phy);
-		
-		/* 寫入 MIPI 路由對應表 (包含影像, FS, FE) */
-		if (des->ops->set_pipe_remap) {
-			struct max_des_remap manual_remap[3] = {
-				{ .from_dt = 0x1E, .from_vc = 0, .to_dt = 0x1E, .to_vc = 0, .phy = 0 }, /* 影像 */
-				{ .from_dt = 0x00, .from_vc = 0, .to_dt = 0x00, .to_vc = 0, .phy = 0 }, /* FS */
-				{ .from_dt = 0x01, .from_vc = 0, .to_dt = 0x01, .to_vc = 0, .phy = 0 }, /* FE */
-			};
-			int i;
-			for (i = 0; i < 3; i++) des->ops->set_pipe_remap(des, pipe, i, &manual_remap[i]);
-			des->ops->set_pipe_remaps_enable(des, pipe, 0x07);
-			pipe->num_remaps = 3;
-		}
-		if (des->ops->set_pipe_enable) des->ops->set_pipe_enable(des, pipe, true);
-
-		/* ========================================================== */
-		/* [HACK] 強制覆寫為 16bpp UYVY，確保 IPU6 收到最完美的格式      */
-		/* ========================================================== */
-		{
-			u8 override_cmds[][3] = {
-				{0x04, 0x0B, 0x10}, /* soft_bpp_0 = 16 (0x10) */
-				{0x04, 0x0C, 0x00}, /* soft_vc_0 = 0 */
-				{0x04, 0x0E, 0x1E}, /* soft_dt_0 = 0x1E (UYVY) */
-				{0x04, 0x56, 0x11}, /* 啟用 Override */
-			};
-			int idx;
-			for (idx = 0; idx < 4; idx++) {
-				i2c_master_send(priv->client, override_cmds[idx], 3);
-			}
-		}
-
-		/* 這裡已經把原本的 set_tpg(des, NULL) 刪掉了，避免 TPG 殘影干擾！ */
-
-		pipe->phy_id = 0;
 		pipe->enabled = true;
 		pipe->link_id = 0;
 		pipe->stream_id = 0;
+		pipe->phy_id = 1; /* 承接目前能 video_lock 的版本 */
+
+		if (priv->unused_phy && priv->unused_phy->index == pipe->phy_id)
+			priv->unused_phy = NULL;
+
+		/*
+		 * 先把 pipe/link/phy mapping 與 remap 建好，
+		 * 再開 output gate。
+		 */
+		if (des->ops->init_phy) {
+			ret = des->ops->init_phy(des, phy);
+			if (ret)
+				dev_warn(priv->dev,
+					 "[DES] init_phy failed (non-fatal): %d\n",
+					 ret);
+		}
+
+		if (des->ops->set_phy_enable) {
+			ret = des->ops->set_phy_enable(des, phy, true);
+			if (ret)
+				dev_warn(priv->dev,
+					 "[DES] set_phy_enable(true) failed (non-fatal): %d\n",
+					 ret);
+		}
+
+		if (des->ops->set_pipe_link) {
+			ret = des->ops->set_pipe_link(des, pipe, link0);
+			if (ret)
+				dev_warn(priv->dev,
+					 "[DES] set_pipe_link failed (non-fatal): %d\n",
+					 ret);
+		}
+
+		if (des->ops->set_pipe_stream_id) {
+			ret = des->ops->set_pipe_stream_id(des, pipe, pipe->stream_id);
+			if (ret)
+				dev_warn(priv->dev,
+					 "[DES] set_pipe_stream_id failed (non-fatal): %d\n",
+					 ret);
+		}
+
+		if (des->ops->set_pipe_phy) {
+			ret = des->ops->set_pipe_phy(des, pipe, phy);
+			if (ret)
+				dev_warn(priv->dev,
+					 "[DES] set_pipe_phy failed (non-fatal): %d\n",
+					 ret);
+		}
+
+		if (pipe->remaps && pipe->num_remaps && des->ops->set_pipe_remap) {
+			for (i = 0; i < pipe->num_remaps; i++) {
+				ret = des->ops->set_pipe_remap(des, pipe, i,
+							       &pipe->remaps[i]);
+				if (ret)
+					dev_warn(priv->dev,
+						 "[DES] set_pipe_remap[%d] failed (non-fatal): %d\n",
+						 i, ret);
+			}
+		}
+
+		if (pipe->num_remaps && des->ops->set_pipe_remaps_enable) {
+			u64 mask = GENMASK_ULL(pipe->num_remaps - 1, 0);
+
+			ret = des->ops->set_pipe_remaps_enable(des, pipe, mask);
+			if (ret)
+				dev_warn(priv->dev,
+					 "[DES] set_pipe_remaps_enable failed (non-fatal): %d\n",
+					 ret);
+		}
+
+		if (des->ops->set_pipe_enable) {
+			ret = des->ops->set_pipe_enable(des, pipe, true);
+			if (ret)
+				dev_warn(priv->dev,
+					 "[DES] set_pipe_enable(true) failed (non-fatal): %d\n",
+					 ret);
+		}
+
 		des->active = true;
 
-	} else {
-		dev_info(priv->dev, "  -> Stopping HW...\n");
-		/* 這裡也把 set_tpg(des, NULL) 刪掉了 */
-		if (des->ops->set_pipe_enable) des->ops->set_pipe_enable(des, pipe, false);
-		if (des->ops->set_phy_enable) des->ops->set_phy_enable(des, phy, false);
-		if (des->ops->set_enable) des->ops->set_enable(des, false);
+		if (des->ops->set_enable) {
+			ret = des->ops->set_enable(des, true);
+			if (ret) {
+				dev_err(priv->dev,
+					"[DES] set_enable(true) failed: %d\n", ret);
+				goto err_stream_off;
+			}
+		}
 
-		phy->enabled = false;
+		dev_info(priv->dev,
+			 "[DES] stream-on prepare OK: pipe0->phy_id=%d lanes=%u freq=%llu\n",
+			 pipe->phy_id, phy->mipi.num_data_lanes,
+			 (unsigned long long)phy->link_frequency);
+
+		return 0;
+
+err_stream_off:
+		if (des->ops->set_pipe_enable)
+			des->ops->set_pipe_enable(des, pipe, false);
+		if (des->ops->set_phy_enable)
+			des->ops->set_phy_enable(des, phy, false);
+		if (des->ops->set_enable)
+			des->ops->set_enable(des, false);
+
 		pipe->enabled = false;
+		link0->enabled = false;
+		phy->enabled = false;
 		des->active = false;
+
+		if (pm_acquired)
+			pm_runtime_put(&client->dev);
+		return ret;
 	}
+
+	dev_info(priv->dev, "[DES] stopping HW...\n");
+
+	if (des->ops->set_pipe_enable) {
+		ret = des->ops->set_pipe_enable(des, pipe, false);
+		if (ret)
+			dev_warn(priv->dev,
+				 "[DES] set_pipe_enable(false) warn: %d\n", ret);
+	}
+
+	if (des->ops->set_phy_enable) {
+		ret = des->ops->set_phy_enable(des, phy, false);
+		if (ret)
+			dev_warn(priv->dev,
+				 "[DES] set_phy_enable(false) warn: %d\n", ret);
+	}
+
+	if (des->ops->set_enable) {
+		ret = des->ops->set_enable(des, false);
+		if (ret)
+			dev_warn(priv->dev,
+				 "[DES] set_enable(false) warn: %d\n", ret);
+	}
+
+	pipe->enabled = false;
+	link0->enabled = false;
+	phy->enabled = false;
+	des->active = false;
+
+	if (pm_runtime_enabled(&client->dev))
+		pm_runtime_put(&client->dev);
 
 	return 0;
 }
@@ -2289,15 +2603,121 @@ static int max_des_enable_streams(struct v4l2_subdev *sd,
 				  u32 pad, u64 streams_mask)
 {
 	struct max_des_priv *priv = v4l2_get_subdevdata(sd);
-	dev_info(priv->dev, "  -> des_enable_streams...\n");
-	return max_des_update_streams(sd, state, pad, streams_mask, true);
+	struct max_des *des = priv->des;
+	int ret;
+	int i;
+	unsigned int prev_ms = 0;
+
+	struct {
+		unsigned int delay_ms;
+		const char *tag;
+	} samples[] = {
+		{ 20,  "20ms"  },
+		{ 50,  "50ms"  },
+		{ 100, "100ms" },
+		{ 200, "200ms" },
+		{ 500, "500ms" },
+	};
+
+	dev_info(priv->dev,
+		 "  -> HACK: Bypassing routing table to enable streams...\n");
+
+	dev_info(priv->dev, "  [DIAG] === Pre-stream-on status ===\n");
+	if (des->ops->log_pipe_status) {
+		dev_info(priv->dev, "  [DIAG] Pipe0 status:\n");
+		des->ops->log_pipe_status(des, &des->pipes[0]);
+	}
+	if (des->ops->log_phy_status) {
+		dev_info(priv->dev, "  [DIAG] PHY0 status:\n");
+		des->ops->log_phy_status(des, &des->phys[0]);
+	}
+
+	/*
+	 * 依照 user guide：
+	 * 先完成 des 端所有 video/pipe/phy/output config，
+	 * 最後才 start video from source。
+	 */
+	ret = max_des_s_stream(sd, 1);
+	if (ret) {
+		dev_err(priv->dev, "  -> s_stream(1) failed: %d\n", ret);
+		return ret;
+	}
+
+	if (priv->sources && priv->sources[0].sd) {
+		dev_info(priv->dev,
+			 "  -> Forwarding enable_streams to Serializer (%s)...\n",
+			 priv->sources[0].sd->name);
+
+		ret = v4l2_subdev_enable_streams(priv->sources[0].sd,
+						 priv->sources[0].pad,
+						 BIT_ULL(0));
+		if (ret) {
+			dev_err(priv->dev,
+				"  -> Serializer enable_streams failed: %d\n", ret);
+			max_des_s_stream(sd, 0);
+			return ret;
+		}
+	} else {
+		dev_err(priv->dev,
+			"  -> ERROR: Serializer not found in sources[0]!\n");
+		max_des_s_stream(sd, 0);
+		return -ENODEV;
+	}
+
+	dev_info(priv->dev, "  [DIAG] === Post-stream-on sampled status ===\n");
+
+	for (i = 0; i < ARRAY_SIZE(samples); i++) {
+		unsigned int cur_ms = samples[i].delay_ms;
+
+		if (cur_ms > prev_ms)
+			msleep(cur_ms - prev_ms);
+		prev_ms = cur_ms;
+
+		dev_info(priv->dev, "  [DIAG] --- sample @%s ---\n",
+			 samples[i].tag);
+
+		if (des->ops->log_pipe_status) {
+			dev_info(priv->dev, "  [DIAG] Pipe0 status (post):\n");
+			des->ops->log_pipe_status(des, &des->pipes[0]);
+		}
+		if (des->ops->log_phy_status) {
+			dev_info(priv->dev, "  [DIAG] PHY0 status (post):\n");
+			des->ops->log_phy_status(des, &des->phys[0]);
+		}
+	}
+
+	return 0;
 }
 
 static int max_des_disable_streams(struct v4l2_subdev *sd,
 				   struct v4l2_subdev_state *state,
 				   u32 pad, u64 streams_mask)
 {
-	return max_des_update_streams(sd, state, pad, streams_mask, false);
+	struct max_des_priv *priv = v4l2_get_subdevdata(sd);
+	int ret;
+
+	dev_info(priv->dev,
+		 "  -> HACK: Bypassing routing table to disable streams...\n");
+
+	/*
+	 * 依照 guide 精神：
+	 * 若需要變更/關閉 video config，應先停 source，
+	 * 再停 des output path。
+	 */
+	if (priv->sources && priv->sources[0].sd) {
+		ret = v4l2_subdev_disable_streams(priv->sources[0].sd,
+						  priv->sources[0].pad,
+						  BIT_ULL(0));
+		if (ret)
+			dev_warn(priv->dev,
+				 "  -> Serializer disable_streams warn: %d\n", ret);
+	}
+
+	ret = max_des_s_stream(sd, 0);
+	if (ret)
+		dev_warn(priv->dev, "  -> s_stream(0) warn: %d\n", ret);
+
+	return 0;
 }
 
 static const struct v4l2_subdev_video_ops max_des_video_ops = {
@@ -2355,46 +2775,80 @@ static int max_des_notify_bound(struct v4l2_async_notifier *nf,
 {
 	struct max_des_priv *priv = nf_to_priv(nf);
 	struct max_serdes_asc *asc = asc_to_max(base_asc);
-	struct max_serdes_source *source = asc->source;
+	struct max_serdes_source *source;
 	struct max_des *des = priv->des;
-	struct max_des_link *link = &des->links[source->index];
-	u32 pad = max_des_link_to_pad(des, link);
+	struct max_des_link *link;
+	u32 sink_pad;
+	int src_pad;
 	int ret;
 
-	ret = media_entity_get_fwnode_pad(&subdev->entity,
-					  source->ep_fwnode,
-					  MEDIA_PAD_FL_SOURCE);
-	
-	if (ret < 0) {
-		dev_warn(priv->dev, "Could not find pad from fwnode, defaulting to Pad 1 (Source) for %s\n", subdev->name);
-		ret = 1;
+	if (!asc || !asc->source || !subdev) {
+		dev_err(priv->dev, "[DES] notify_bound invalid args\n");
+		return -EINVAL;
+	}
+
+	source = asc->source;
+	link = &des->links[source->index];
+	sink_pad = max_des_link_to_pad(des, link);
+
+	/*
+	 * 手動路徑：serializer 的 source pad 通常是 pad 1
+	 * fwnode 路徑：才去查 remote source pad
+	 */
+	if (source->ep_fwnode) {
+		src_pad = media_entity_get_fwnode_pad(&subdev->entity,
+						      source->ep_fwnode,
+						      MEDIA_PAD_FL_SOURCE);
+		if (src_pad < 0) {
+			dev_warn(priv->dev,
+				 "[DES] could not find source pad from fwnode for %s, fallback to pad 1\n",
+				 subdev->name);
+			src_pad = 1;
+		}
+	} else {
+		src_pad = 1;
+		dev_info(priv->dev,
+			 "[DES] manual path: using serializer source pad %d for %s\n",
+			 src_pad, subdev->name);
 	}
 
 	source->sd = subdev;
-	source->pad = ret;
+	source->pad = src_pad;
 
-	ret = media_create_pad_link(&source->sd->entity, source->pad,
-				    &priv->sd.entity, pad,
+	dev_info(priv->dev,
+		 "[DES] bound subdev %s:%d -> %s:%u (link %u)\n",
+		 subdev->name, src_pad, priv->sd.name, sink_pad, source->index);
+
+	ret = media_create_pad_link(&subdev->entity, src_pad,
+				    &priv->sd.entity, sink_pad,
 				    MEDIA_LNK_FL_ENABLED |
 				    MEDIA_LNK_FL_IMMUTABLE);
+	if (ret == -EEXIST) {
+		dev_warn(priv->dev,
+			 "[DES] media link already exists %s:%d -> %s:%u\n",
+			 subdev->name, src_pad, priv->sd.name, sink_pad);
+		ret = 0;
+	}
 	if (ret) {
-		dev_err(priv->dev, "Unable to link %s:%u -> %s:%u\n",
-			source->sd->name, source->pad, priv->sd.name, pad);
+		dev_err(priv->dev, "[DES] Unable to link %s:%d -> %s:%u: %d\n",
+			subdev->name, src_pad, priv->sd.name, sink_pad, ret);
 		return ret;
 	}
 
-	/* ========================================================= */
-	/* [終極修復] Hotplug 補救機制：強制大老闆幫新來的 Subdev 建立節點 */
-	/* ========================================================= */
 	if (priv->sd.v4l2_dev) {
 		int err;
-		dev_info(priv->dev, "Force registering devnodes for hotplugged subdevs\n");
+
+		dev_info(priv->dev,
+			 "[DES] Force registering devnodes for hotplugged serializer\n");
 		err = v4l2_device_register_subdev_nodes(priv->sd.v4l2_dev);
 		if (err)
-			dev_warn(priv->dev, "Nodes register failed: %d\n", err);
+			dev_warn(priv->dev,
+				 "[DES] Nodes register failed: %d\n", err);
 	}
+
 	return 0;
 }
+
 static void max_des_notify_unbind(struct v4l2_async_notifier *nf,
 				  struct v4l2_subdev *subdev,
 				  struct v4l2_async_connection *base_asc)
@@ -2415,64 +2869,91 @@ static int max_des_v4l2_notifier_register(struct max_des_priv *priv)
 	struct max_des *des = priv->des;
 	unsigned int i;
 	int ret;
-	struct i2c_adapter *adapter; /* [Patch] */
 
 	v4l2_async_subdev_nf_init(&priv->nf, &priv->sd);
 
 	for (i = 0; i < des->ops->num_links; i++) {
 		struct max_des_link *link = &des->links[i];
 		struct max_serdes_source *source;
-		struct max_serdes_asc *asc;
+		struct max_serdes_asc *asc = NULL;
 
 		if (!link->enabled)
 			continue;
 
 		source = max_des_get_link_source(priv, link);
-		if (!source->ep_fwnode)
-			continue;
-
-		asc = v4l2_async_nf_add_fwnode(&priv->nf, source->ep_fwnode,
-					       struct max_serdes_asc);
-		if (IS_ERR(asc)) {
-			dev_err(priv->dev,
-				"Failed to add subdev for source %u: %pe", i,
-				asc);
-
+		if (!source) {
+			dev_err(priv->dev, "[DES] source is NULL for link %u\n", i);
 			v4l2_async_nf_cleanup(&priv->nf);
-
-			return PTR_ERR(asc);
+			return -EINVAL;
 		}
 
-		asc->source = source;
-	}
+		source->index = i;
+		source->sd = NULL;
+		source->pad = 0;
 
-	/* [Patch] Force Link for Manual Probe on Bus 1 */
-    adapter = i2c_get_adapter(1); 
-    if (adapter) {
-        struct max_serdes_asc *asc;
-        struct max_serdes_source *source;
-        
-        dev_info(priv->dev, "HACK: Force waiting for I2C Client 0x21 on Bus %d\n", adapter->nr);
-        
-        /* Wait for 0x21 on Bus 1 */
-        asc = v4l2_async_nf_add_i2c(&priv->nf, adapter->nr, 0x21, struct max_serdes_asc);
-        
-        if (!IS_ERR(asc)) {
-            /* Assume Link 0 (Source 0) */
-            source = max_des_get_link_source(priv, &priv->des->links[0]);
-            asc->source = source;
-            dev_info(priv->dev, "HACK: Success! Added async waiter for Link 0.\n");
-        } else {
-            dev_err(priv->dev, "HACK: Failed to add I2C waiter: %ld\n", PTR_ERR(asc));
-        }
-        i2c_put_adapter(adapter);
-    }
+		/*
+		 * 手動 bring-up 主線：
+		 * 只要 des mux child bus 已存在，就優先走 child-bus i2c waiter。
+		 *
+		 * 關鍵原因：
+		 * 你現在雖然 source->ep_fwnode 存在，但實際 serializer 是
+		 * 手動掛在 des mux 產生的 child i2c bus 上（例如 i2c-9, addr=0x40）。
+		 * 若先走 fwnode，notify_bound() 根本不會匹配到這顆手動 new_device 的 ser。
+		 */
+		if (priv->mux &&
+		    i < priv->mux->max_adapters &&
+		    priv->mux->adapter[i]) {
+			struct i2c_adapter *mux_adap = priv->mux->adapter[i];
+
+			dev_info(priv->dev,
+				 "[DES] waiting for serializer on child Mux Bus %d addr 0x40 (link %u)\n",
+				 mux_adap->nr, i);
+
+			asc = v4l2_async_nf_add_i2c(&priv->nf, mux_adap->nr, 0x40,
+						    struct max_serdes_asc);
+			if (IS_ERR(asc)) {
+				dev_err(priv->dev,
+					"[DES] add_i2c waiter failed for link %u on bus %d: %ld\n",
+					i, mux_adap->nr, PTR_ERR(asc));
+				v4l2_async_nf_cleanup(&priv->nf);
+				return PTR_ERR(asc);
+			}
+
+			asc->source = source;
+			continue;
+		}
+
+		/*
+		 * 備援：只有在沒有 child mux bus 可用時，才退回 fwnode。
+		 */
+		if (source->ep_fwnode) {
+			asc = v4l2_async_nf_add_fwnode(&priv->nf, source->ep_fwnode,
+						       struct max_serdes_asc);
+			if (IS_ERR(asc)) {
+				dev_err(priv->dev,
+					"[DES] add_fwnode waiter failed for link %u: %ld\n",
+					i, PTR_ERR(asc));
+				v4l2_async_nf_cleanup(&priv->nf);
+				return PTR_ERR(asc);
+			}
+
+			asc->source = source;
+			dev_info(priv->dev,
+				 "[DES] fallback: waiting for serializer via fwnode on link %u\n",
+				 i);
+			continue;
+		}
+
+		dev_warn(priv->dev,
+			 "[DES] no child mux adapter and no fwnode for link %u\n",
+			 i);
+	}
 
 	priv->nf.ops = &max_des_notify_ops;
 
 	ret = v4l2_async_nf_register(&priv->nf);
 	if (ret) {
-		dev_err(priv->dev, "Failed to register subdev notifier");
+		dev_err(priv->dev, "[DES] Failed to register subdev notifier: %d\n", ret);
 		v4l2_async_nf_cleanup(&priv->nf);
 		return ret;
 	}
@@ -2808,6 +3289,8 @@ static int max_des_parse_dt(struct max_des_priv *priv)
 	unsigned int i;
 	int ret;
 
+	priv->unused_phy = NULL;
+
 	for (i = 0; i < des->ops->num_phys; i++) {
 		phy = &des->phys[i];
 		phy->index = i;
@@ -2817,22 +3300,27 @@ static int max_des_parse_dt(struct max_des_priv *priv)
 			return ret;
 	}
 
+	/*
+	 * 目前先固定直通 lane map: {1,2,3,4}
+	 * 若之後確認板子真的需要 D2/D3 swap，再只改這一處。
+	 */
 	if (des->ops->num_phys > 0) {
 		des->phys[0].mipi.data_lanes[0] = 1;
 		des->phys[0].mipi.data_lanes[1] = 2;
-		des->phys[0].mipi.data_lanes[2] = 4; /* D2 和 D3 對調 */
-		des->phys[0].mipi.data_lanes[3] = 3;
+		des->phys[0].mipi.data_lanes[2] = 3;
+		des->phys[0].mipi.data_lanes[3] = 4;
 	}
 
 	ret = max_des_find_phys_config(priv);
 	if (ret)
 		return ret;
 
-	/* Find an unsed PHY to send unampped data to. */
 	for (i = 0; i < des->ops->num_phys; i++) {
 		phy = &des->phys[i];
 
 		if (!phy->enabled) {
+			if (des->phys_config == 5 && phy->index == 1)
+				continue;
 			priv->unused_phy = phy;
 			break;
 		}
@@ -2842,25 +3330,11 @@ static int max_des_parse_dt(struct max_des_priv *priv)
 		pipe = &des->pipes[i];
 		pipe->index = i;
 
-		/*
-		 * Serializers can send data on different stream ids over the
-		 * same link, and some deserializers support stream id autoselect
-		 * allowing them to receive data from all stream ids.
-		 * Deserializers that support that feature should enable it.
-		 * Deserializers that support per-link stream ids do not need
-		 * to assign unique stream ids to each serializer.
-		 */
 		if (des->ops->needs_unique_stream_id)
 			pipe->stream_id = i;
 		else
 			pipe->stream_id = 0;
 
-		/*
-		 * We already checked that num_pipes >= num_links.
-		 * Set up pipe to receive data from the link with the same index.
-		 * This is already the default for most chips, and some of them
-		 * don't even support receiving pipe data from a different link.
-		 */
 		pipe->link_id = i % des->ops->num_links;
 	}
 
@@ -2986,6 +3460,18 @@ int max_des_probe(struct i2c_client *client, struct max_des *des)
 	ret = max_des_i2c_adapter_init(priv);
 	if (ret)
 		goto err_disable_pocs;
+
+	/*
+	 * Legacy bring-up workaround:
+	 * historically required before remote MAX96717 can be probed.
+	 * Keep it here for now, because without it remote serializer probe
+	 * currently fails with -121.
+	 */
+	// ret = max_des_legacy_child_bus_magic_write(priv);
+	// if (ret)
+	// 	dev_warn(dev,
+	// 		 "[LEGACY] proceed even though child-bus magic write failed: %d\n",
+	// 		 ret);
 
 	ret = max_des_v4l2_register(priv);
 	if (ret)

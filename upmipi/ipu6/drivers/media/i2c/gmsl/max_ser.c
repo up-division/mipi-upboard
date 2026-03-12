@@ -23,6 +23,17 @@
 #define MAX_SER_NUM_LINKS	1
 #define MAX_SER_NUM_PHYS	1
 
+#define MAX96717_CAM_RESET_MFP0_REG   0x02BE
+#define MAX96717_MFP7_TRIGGER_REG     0x02D3
+#define MAX96717_MFP8_TRIGGER_REG     0x02D6
+#define MAX96717_DATATYPE_REG         0x0318
+
+#define MAX96717_GPIO_LOW             0x00
+#define MAX96717_GPIO_HIGH            0x10
+
+/* 廠商 script 標的是 YUV422 datatype */
+#define MAX96717_DATATYPE_YUV422      0x5E
+
 struct max_ser_priv {
 	struct max_ser *ser;
 	struct device *dev;
@@ -286,11 +297,40 @@ static void max_ser_i2c_mux_deinit(struct max_ser_priv *priv)
 
 static int max_ser_i2c_mux_init(struct max_ser_priv *priv)
 {
+	u32 flags = I2C_MUX_LOCKED;
+	int ret;
+
+	/*
+	 * 關鍵修正：
+	 * serializer 這層也先不要用 I2C_MUX_GATE。
+	 *
+	 * 目前 child bus 主要用途是掛 sensor。
+	 * 在目前手動 new_device / parent-bus 直掛 serializer 的 bring-up 架構下，
+	 * GATE 很可能造成 parent bus 與 child bus 間 access 狀態不一致，
+	 * 間接讓 des 在 parent bus 上變成 -121。
+	 */
+	dev_info(priv->dev,
+		 "[MUX] init ser i2c mux: parent=i2c-%d flags=0x%x (GATE disabled)\n",
+		 priv->client->adapter->nr, flags);
+
 	priv->mux = i2c_mux_alloc(priv->client->adapter, &priv->client->dev,
-				  1, 0, I2C_MUX_LOCKED | I2C_MUX_GATE,
+				  1, 0, flags,
 				  max_ser_i2c_mux_select, NULL);
-	if (!priv->mux) return -ENOMEM;
-	return i2c_mux_add_adapter(priv->mux, 0, 0);
+	if (!priv->mux)
+		return -ENOMEM;
+
+	ret = i2c_mux_add_adapter(priv->mux, 0, 0);
+	if (ret) {
+		max_ser_i2c_mux_deinit(priv);
+		return ret;
+	}
+
+	if (priv->mux->adapter[0])
+		dev_info(priv->dev,
+			 "[MUX] ser child adapter[0] -> i2c-%d\n",
+			 priv->mux->adapter[0]->nr);
+
+	return 0;
 }
 
 static int max_ser_i2c_adapter_init(struct max_ser_priv *priv)
@@ -493,6 +533,95 @@ static int max_ser_init_state(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int max_ser_write_local_reg(struct max_ser_priv *priv, u16 reg, u8 val)
+{
+	u8 buf[3] = { reg >> 8, reg & 0xff, val };
+	struct i2c_msg msg = {
+		.addr  = priv->client->addr,
+		.flags = 0,
+		.len   = sizeof(buf),
+		.buf   = buf,
+	};
+	int ret;
+
+	ret = i2c_transfer(priv->client->adapter, &msg, 1);
+	if (ret != 1) {
+		if (ret >= 0)
+			ret = -EIO;
+		dev_err(priv->dev,
+			"[SER] local reg write failed: addr=0x%02x reg=0x%04x val=0x%02x ret=%d\n",
+			priv->client->addr, reg, val, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int max_ser_vendor_prep_before_sensor(struct max_ser_priv *priv)
+{
+	int ret;
+
+	/*
+	 * 依廠商 script：
+	 *   0x0318 = 0x5E  (YUV422 datatype)
+	 *   0x02BE = 0x10  (camera reset via MAX96717F MFP0)
+	 */
+	dev_info(priv->dev, "[SER] vendor prep: set datatype + camera reset\n");
+
+	ret = max_ser_write_local_reg(priv, MAX96717_DATATYPE_REG,
+				      MAX96717_DATATYPE_YUV422);
+	if (ret)
+		return ret;
+
+	ret = max_ser_write_local_reg(priv, MAX96717_CAM_RESET_MFP0_REG,
+				      MAX96717_GPIO_HIGH);
+	if (ret)
+		return ret;
+
+	/* 給模組 reset 緩衝時間 */
+	msleep(20);
+
+	return 0;
+}
+
+static int max_ser_vendor_kick_after_sensor(struct max_ser_priv *priv)
+{
+	int ret;
+
+	/*
+	 * 承接「des 有小封包」的基線版本：
+	 * 只做 MFP7 / MFP8 pulse，不加入 0x0000=0x82，
+	 * 也不改成 300ms 長 delay。
+	 *
+	 * 原因：
+	 * 你後面幾輪退步幾乎都和 vendor kick 被改動有關。
+	 * 這份基線已證明：這個較小的 kick 至少能讓 ser/des 都看到 packet。
+	 */
+	dev_info(priv->dev, "[SER] vendor kick: pulse MFP7/MFP8\n");
+
+	ret = max_ser_write_local_reg(priv, 0x02d3, 0x00);
+	if (ret)
+		return ret;
+	usleep_range(1000, 2000);
+
+	ret = max_ser_write_local_reg(priv, 0x02d3, 0x10);
+	if (ret)
+		return ret;
+	usleep_range(1000, 2000);
+
+	ret = max_ser_write_local_reg(priv, 0x02d6, 0x00);
+	if (ret)
+		return ret;
+	usleep_range(1000, 2000);
+
+	ret = max_ser_write_local_reg(priv, 0x02d6, 0x10);
+	if (ret)
+		return ret;
+
+	usleep_range(1000, 2000);
+	return 0;
+}
+
 #include <linux/delay.h>  // msleep
 
 static int max_ser_enable_streams(struct v4l2_subdev *sd,
@@ -503,8 +632,10 @@ static int max_ser_enable_streams(struct v4l2_subdev *sd,
 	struct max_ser *ser = priv->ser;
 	struct max_ser_phy *phy;
 	struct max_ser_pipe *pipe;
-	struct max_ser_pipe_mode mode = { 0 };
+	unsigned int dts[] = { 0x1e, 0x00, 0x01 };
 	int ret = 0, n;
+
+	dev_info(priv->dev, "[SER][ABTEST-NOVC-DT1E00FE-CONTCLK] enter enable_streams\n");
 
 	if (!ser || !ser->ops)
 		return -EINVAL;
@@ -513,24 +644,12 @@ static int max_ser_enable_streams(struct v4l2_subdev *sd,
 	pipe = &ser->pipes[0];
 
 	dev_info(priv->dev, "[SER] sources[0].sd=%s\n",
-         priv->sources && priv->sources[0].sd ? priv->sources[0].sd->name : "NULL");
-	dev_info(priv->dev, "[SER] enable_streams pad=%u mask=0x%llx\n", pad, streams_mask);
+		 priv->sources && priv->sources[0].sd ?
+		 priv->sources[0].sd->name : "NULL");
+	dev_info(priv->dev, "[SER] enable_streams pad=%u mask=0x%llx\n",
+		 pad, streams_mask);
 
-	/* 0) 讓 serializer 基本 init（可重入；若你擔心重複可加 flag） */
-	if (ser->ops->init) {
-		for (n = 0; n < 20; n++) {
-			ret = ser->ops->init(ser);
-			if (ret != -EREMOTEIO)
-				break;
-			msleep(20);
-		}
-		if (ret) {
-			dev_err(priv->dev, "[SER] ops->init failed: %d\n", ret);
-			return ret;
-		}
-	}
-
-	/* 1) 配 MIPI RX（相機端）: 4 lanes, clock_lane=0, 不做 polarity */
+	/* 1) serializer MIPI RX 基本參數 */
 	memset(&phy->mipi, 0, sizeof(phy->mipi));
 	phy->enabled = true;
 	phy->mipi.num_data_lanes = 4;
@@ -540,7 +659,9 @@ static int max_ser_enable_streams(struct v4l2_subdev *sd,
 	phy->mipi.data_lanes[3] = 4;
 	phy->mipi.clock_lane = 0;
 
-	/* init_phy 會把 lane map / polarity / noncont clock 寫進 MAX96717 */
+	/* 先維持 continuous clock，不在這輪動 */
+	phy->mipi.flags = 0;
+
 	if (ser->ops->init_phy) {
 		for (n = 0; n < 20; n++) {
 			ret = ser->ops->init_phy(ser, phy);
@@ -554,7 +675,12 @@ static int max_ser_enable_streams(struct v4l2_subdev *sd,
 		}
 	}
 
-	/* 2) 打開 MIPI RX port */
+	if (ser->ops->log_status) {
+		dev_info(priv->dev, "[SER] status after init_phy:\n");
+		ser->ops->log_status(ser);
+	}
+
+	/* 2) 開 serializer RX port */
 	if (ser->ops->set_phy_active) {
 		for (n = 0; n < 20; n++) {
 			ret = ser->ops->set_phy_active(ser, phy, true);
@@ -568,60 +694,50 @@ static int max_ser_enable_streams(struct v4l2_subdev *sd,
 		}
 	}
 
-	/* 3) Pipe 綁定到 phy */
+	if (ser->ops->log_status) {
+		dev_info(priv->dev, "[SER] status after set_phy_active:\n");
+		ser->ops->log_status(ser);
+	}
+
+	/* 3) 配 serializer pipe */
+	pipe->enabled = true;
+	pipe->stream_id = 0;
+
 	if (ser->ops->set_pipe_phy) {
 		ret = ser->ops->set_pipe_phy(ser, pipe, phy);
 		if (ret) {
 			dev_err(priv->dev, "[SER] set_pipe_phy failed: %d\n", ret);
-			return ret;
+			goto err_phy_off;
 		}
 	}
 
-	/* 4) 設 VC / DT（相機輸出 UYVY = DT 0x1E，VC0） */
-	if (ser->ops->set_pipe_vcs) {
-		ret = ser->ops->set_pipe_vcs(ser, pipe, 1U << 0); /* VC0 */
-		if (ret) {
-			dev_err(priv->dev, "[SER] set_pipe_vcs failed: %d\n", ret);
-			return ret;
-		}
-	}
-
-	if (ser->ops->set_pipe_dt) {
-		ret = ser->ops->set_pipe_dt(ser, pipe, 0, 0x1E); /* YUV422 8-bit */
-		if (ret) {
-			dev_err(priv->dev, "[SER] set_pipe_dt failed: %d\n", ret);
-			return ret;
-		}
-	}
-
-	if (ser->ops->set_pipe_dt_en) {
-		ret = ser->ops->set_pipe_dt_en(ser, pipe, 0, true);
-		if (ret) {
-			dev_err(priv->dev, "[SER] set_pipe_dt_en failed: %d\n", ret);
-			return ret;
-		}
-	}
-
-	/* 5) 設 stream_id = 0（對齊 des / IPU6） */
 	if (ser->ops->set_pipe_stream_id) {
 		ret = ser->ops->set_pipe_stream_id(ser, pipe, 0);
 		if (ret) {
 			dev_err(priv->dev, "[SER] set_pipe_stream_id failed: %d\n", ret);
-			return ret;
+			goto err_phy_off;
 		}
 	}
 
-	/* 6) 設 BPP（UYVY 16bpp）；若你想用 auto bpp，把 mode.bpp=0 即可 */
-	mode.bpp = 16;
-	if (ser->ops->set_pipe_mode) {
-		ret = ser->ops->set_pipe_mode(ser, pipe, &mode);
-		if (ret) {
-			dev_err(priv->dev, "[SER] set_pipe_mode failed: %d\n", ret);
-			return ret;
-		}
+	/*
+	 * 關鍵修改：
+	 * 不設 VC filter，但只放行 UYVY + FS + FE。
+	 * 目標是把 serializer 端的雜 packet 先收斂掉，
+	 * 避免 host 看到過多不需要的 header/long packet。
+	 */
+	ret = max_ser_set_pipe_dts(priv, pipe, dts, ARRAY_SIZE(dts));
+	if (ret) {
+		dev_err(priv->dev, "[SER] set_pipe_dts(1e/00/01) failed: %d\n", ret);
+		goto err_phy_off;
 	}
 
-	/* 7) 最後才 enable pipe（開始送） */
+	if (ser->ops->log_status) {
+		dev_info(priv->dev,
+			 "[SER] status after forwarding config (no VC filter, DT={0x1e,0x00,0x01}):\n");
+		ser->ops->log_status(ser);
+	}
+
+	/* 先 enable pipe，讓 forwarding path ready */
 	if (ser->ops->set_pipe_enable) {
 		for (n = 0; n < 20; n++) {
 			ret = ser->ops->set_pipe_enable(ser, pipe, true);
@@ -631,12 +747,96 @@ static int max_ser_enable_streams(struct v4l2_subdev *sd,
 		}
 		if (ret) {
 			dev_err(priv->dev, "[SER] set_pipe_enable(true) failed: %d\n", ret);
-			return ret;
+			goto err_phy_off;
 		}
+	}
+
+	if (ser->ops->log_status) {
+		dev_info(priv->dev, "[SER] status after early pipe enable:\n");
+		ser->ops->log_status(ser);
+	}
+
+	/* 4) 廠商 script：datatype + camera reset */
+	ret = max_ser_vendor_prep_before_sensor(priv);
+	if (ret) {
+		dev_err(priv->dev, "[SER] vendor prep failed: %d\n", ret);
+		goto err_pipe_off;
+	}
+
+	if (ser->ops->log_status) {
+		dev_info(priv->dev, "[SER] status after vendor prep:\n");
+		ser->ops->log_status(ser);
+	}
+
+	/* 5) 再 enable sensor */
+	if (priv->sources && priv->sources[0].sd) {
+		dev_info(priv->dev, "[SER] Enabling ISX031 sensor...\n");
+		ret = v4l2_subdev_enable_streams(priv->sources[0].sd,
+						 priv->sources[0].pad,
+						 BIT_ULL(0));
+		if (ret) {
+			dev_err(priv->dev,
+				"[SER] Failed to enable ISX031 sensor: %d\n", ret);
+			goto err_pipe_off;
+		}
+	} else {
+		dev_err(priv->dev, "[SER] No sensor connected in sources[0]\n");
+		ret = -ENODEV;
+		goto err_pipe_off;
+	}
+
+	if (ser->ops->log_status) {
+		dev_info(priv->dev, "[SER] status after sensor enable:\n");
+		ser->ops->log_status(ser);
+	}
+
+	/* 6) 廠商 kick：維持目前小改版本 */
+	ret = max_ser_vendor_kick_after_sensor(priv);
+	if (ret) {
+		dev_err(priv->dev, "[SER] vendor kick failed: %d\n", ret);
+		goto err_sensor_off;
+	}
+
+	if (ser->ops->log_status) {
+		dev_info(priv->dev, "[SER] status after vendor kick (t=0ms):\n");
+		ser->ops->log_status(ser);
+
+		msleep(20);
+		dev_info(priv->dev, "[SER] status 20ms after vendor kick:\n");
+		ser->ops->log_status(ser);
+
+		msleep(30); /* cumulative 50ms */
+		dev_info(priv->dev, "[SER] status 50ms after vendor kick:\n");
+		ser->ops->log_status(ser);
+
+		msleep(50); /* cumulative 100ms */
+		dev_info(priv->dev, "[SER] status 100ms after vendor kick:\n");
+		ser->ops->log_status(ser);
+
+		msleep(100); /* cumulative 200ms */
+		dev_info(priv->dev, "[SER] status 200ms after vendor kick:\n");
+		ser->ops->log_status(ser);
+
+		msleep(300); /* cumulative 500ms */
+		dev_info(priv->dev, "[SER] status 500ms after vendor kick:\n");
+		ser->ops->log_status(ser);
 	}
 
 	dev_info(priv->dev, "[SER] enable_streams done\n");
 	return 0;
+
+err_sensor_off:
+	if (priv->sources && priv->sources[0].sd)
+		v4l2_subdev_disable_streams(priv->sources[0].sd,
+					    priv->sources[0].pad,
+					    BIT_ULL(0));
+err_pipe_off:
+	if (ser->ops->set_pipe_enable)
+		ser->ops->set_pipe_enable(ser, pipe, false);
+err_phy_off:
+	if (ser->ops->set_phy_active)
+		ser->ops->set_phy_active(ser, phy, false);
+	return ret;
 }
 
 static int max_ser_disable_streams(struct v4l2_subdev *sd,
@@ -655,20 +855,44 @@ static int max_ser_disable_streams(struct v4l2_subdev *sd,
 	phy  = &ser->phys[0];
 	pipe = &ser->pipes[0];
 
-	dev_info(priv->dev, "[SER] disable_streams pad=%u mask=0x%llx\n", pad, streams_mask);
+	dev_info(priv->dev, "[SER] disable_streams pad=%u mask=0x%llx\n",
+		 pad, streams_mask);
 
+	/* 1) 先關 serializer pipe */
 	if (ser->ops->set_pipe_enable) {
 		ret = ser->ops->set_pipe_enable(ser, pipe, false);
 		if (ret)
 			dev_err(priv->dev, "[SER] set_pipe_enable(false) failed: %d\n", ret);
 	}
 
-	if (ser->ops->set_phy_active) {
-		int r2 = ser->ops->set_phy_active(ser, phy, false);
-		if (r2)
-			dev_err(priv->dev, "[SER] set_phy_active(false) failed: %d\n", r2);
-		if (!ret) ret = r2;
+	/* 2) 再關 sensor */
+	if (priv->sources && priv->sources[0].sd) {
+		int r2;
+
+		dev_info(priv->dev, "[SER] Disabling ISX031 sensor...\n");
+		r2 = v4l2_subdev_disable_streams(priv->sources[0].sd,
+						 priv->sources[0].pad,
+						 BIT_ULL(0));
+		if (r2) {
+			dev_err(priv->dev,
+				"[SER] sensor disable_streams failed: %d\n", r2);
+			if (!ret)
+				ret = r2;
+		}
 	}
+
+	/* 3) 最後關 serializer 的 MIPI RX */
+	if (ser->ops->set_phy_active) {
+		int r3 = ser->ops->set_phy_active(ser, phy, false);
+		if (r3) {
+			dev_err(priv->dev, "[SER] set_phy_active(false) failed: %d\n", r3);
+			if (!ret)
+				ret = r3;
+		}
+	}
+
+	phy->enabled = false;
+	pipe->enabled = false;
 
 	return ret;
 }
@@ -730,68 +954,71 @@ static int max_ser_notify_bound(struct v4l2_async_notifier *nf,
 	int i, ret;
 
 	if (!base_asc || !subdev) {
-		dev_err(priv->dev, "notify_bound: invalid args\n");
-		return 0; /* 絕對不要回錯誤，避免 async unbind path 炸掉 */
+		dev_err(priv->dev, "[SER] notify_bound invalid args\n");
+		return -EINVAL;
 	}
 
 	asc = asc_to_max(base_asc);
 	source = asc ? asc->source : NULL;
 	if (!source) {
-		dev_err(priv->dev, "notify_bound: asc->source is NULL for %s\n", subdev->name);
-		return 0;
+		dev_err(priv->dev, "[SER] notify_bound: asc->source is NULL for %s\n",
+			subdev->name);
+		return -EINVAL;
 	}
 
 	sink_pad = source->index;
 
-	/* 檢查 ser 自己的 sink pad 範圍 */
 	if (sink_pad >= priv->sd.entity.num_pads) {
-		dev_err(priv->dev, "notify_bound: sink_pad=%u out of range (num_pads=%u)\n",
+		dev_err(priv->dev,
+			"[SER] notify_bound: sink_pad=%u out of range (num_pads=%u)\n",
 			sink_pad, priv->sd.entity.num_pads);
-		return 0;
+		return -EINVAL;
 	}
 
-	/* 找對方第一個 SOURCE pad（不要硬寫 0） */
 	for (i = 0; i < subdev->entity.num_pads; i++) {
 		if (subdev->entity.pads[i].flags & MEDIA_PAD_FL_SOURCE) {
 			remote_pad = i;
 			break;
 		}
 	}
+
 	if (!(subdev->entity.pads[remote_pad].flags & MEDIA_PAD_FL_SOURCE)) {
-		dev_err(priv->dev, "notify_bound: %s has no SOURCE pad\n", subdev->name);
-		return 0;
+		dev_warn(priv->dev,
+			 "[SER] %s has no explicit SOURCE pad, fallback to pad 0\n",
+			 subdev->name);
+		remote_pad = 0;
 	}
 
-	/* 記下來源 subdev 與 pad */
 	source->sd = subdev;
 	source->pad = remote_pad;
 
-	dev_info(priv->dev, "Bound subdev %s:%u -> %s:%u\n",
+	dev_info(priv->dev, "[SER] Bound subdev %s:%u -> %s:%u\n",
 		 subdev->name, remote_pad, priv->sd.name, sink_pad);
 
 	ret = media_create_pad_link(&subdev->entity, remote_pad,
 				    &priv->sd.entity, sink_pad,
 				    MEDIA_LNK_FL_ENABLED | MEDIA_LNK_FL_IMMUTABLE);
 
-	/* 重要：link 失敗不要回錯誤，避免 v4l2 async 的錯誤路徑把 kernel 弄掛 */
 	if (ret == -EEXIST) {
-		dev_warn(priv->dev, "link already exists, ignore\n");
-		ret = 0; /* 這裡改成 0 讓它繼續往下走 */
-	}
-	if (ret) {
-		dev_err(priv->dev, "media_create_pad_link failed (%d), ignore to avoid async crash\n", ret);
+		dev_warn(priv->dev, "[SER] link already exists, ignore\n");
 		ret = 0;
 	}
 
-	/* ========================================================== */
-	/* [ChatGPT 完美助攻] 強制幫晚到的相機註冊 /dev/v4l-subdevX 節點 */
-	/* ========================================================== */
+	if (ret) {
+		dev_err(priv->dev,
+			"[SER] media_create_pad_link failed: %d\n", ret);
+		return ret;
+	}
+
 	if (priv->sd.v4l2_dev) {
 		int err;
-		dev_info(priv->dev, "HACK: register subdev nodes for hotplugged sensor\n");
+
+		dev_info(priv->dev,
+			 "[SER] register subdev nodes for hotplugged sensor\n");
 		err = v4l2_device_register_subdev_nodes(priv->sd.v4l2_dev);
 		if (err)
-			dev_warn(priv->dev, "Failed to register nodes: %d\n", err);
+			dev_warn(priv->dev,
+				 "[SER] Failed to register nodes: %d\n", err);
 	}
 
 	return 0;
@@ -819,70 +1046,80 @@ static int max_ser_v4l2_notifier_register(struct max_ser_priv *priv)
 
 	v4l2_async_subdev_nf_init(&priv->nf, &priv->sd);
 
-	/* 1. 標準的 Device Tree (fwnode) 解析流程 (手動載入時通常會跳過) */
 	for (i = 0; i < ser->ops->num_phys; i++) {
 		struct max_ser_phy *phy = &ser->phys[i];
 		struct max_serdes_source *source;
-		struct max_serdes_asc *asc;
+		struct max_serdes_asc *asc = NULL;
 
 		source = max_ser_get_phy_source(priv, phy);
-		if (!source->ep_fwnode)
-			continue;
-
-		asc = v4l2_async_nf_add_fwnode(&priv->nf, source->ep_fwnode,
-					       struct max_serdes_asc);
-		if (IS_ERR(asc)) {
+		if (!source) {
+			dev_err(priv->dev, "[SER] source is NULL for phy %u\n", i);
 			v4l2_async_nf_cleanup(&priv->nf);
-			return PTR_ERR(asc);
+			return -EINVAL;
 		}
-		asc->source = source;
+
+		source->index = i;
+		source->sd = NULL;
+		source->pad = 0;
+
+		/*
+		 * 手動 bring-up 主線：
+		 * 只要 serializer 自己的 child mux bus 已存在，就優先等 i2c waiter。
+		 */
+		if (priv->mux && priv->mux->adapter[0]) {
+			struct i2c_adapter *mux_adap = priv->mux->adapter[0];
+
+			dev_info(priv->dev,
+				 "[SER] waiting for ISX031 (0x1a) on Mux Bus %d\n",
+				 mux_adap->nr);
+
+			asc = v4l2_async_nf_add_i2c(&priv->nf, mux_adap->nr, 0x1a,
+						    struct max_serdes_asc);
+			if (IS_ERR(asc)) {
+				dev_err(priv->dev,
+					"[SER] add_i2c waiter failed on bus %d: %ld\n",
+					mux_adap->nr, PTR_ERR(asc));
+				v4l2_async_nf_cleanup(&priv->nf);
+				return PTR_ERR(asc);
+			}
+
+			asc->source = source;
+			break; /* 單顆 sensor */
+		}
+
+		/*
+		 * 備援：沒有 mux child bus 時才退回 fwnode
+		 */
+		if (source->ep_fwnode) {
+			asc = v4l2_async_nf_add_fwnode(&priv->nf, source->ep_fwnode,
+						       struct max_serdes_asc);
+			if (IS_ERR(asc)) {
+				dev_err(priv->dev,
+					"[SER] add_fwnode waiter failed for phy %u: %ld\n",
+					i, PTR_ERR(asc));
+				v4l2_async_nf_cleanup(&priv->nf);
+				return PTR_ERR(asc);
+			}
+
+			asc->source = source;
+			dev_info(priv->dev,
+				 "[SER] fallback: waiting for sensor via fwnode on phy %u\n", i);
+			continue;
+		}
+
+		dev_warn(priv->dev,
+			 "[SER] no child mux adapter and no fwnode for phy %u\n", i);
 	}
 
-	/* ========================================================== */
-	/* [HACK] 手動掛載修復：讓 Serializer 監聽自己建立的虛擬 I2C Bus   */
-	/* ========================================================== */
-	/* 確保 notifier 已 init、priv->sources 已配置完成後再加 waiter */
-	if (priv->mux && priv->mux->adapter[0]) {
-		struct i2c_adapter *mux_adap = priv->mux->adapter[0];
-		struct max_serdes_asc *asc;
-		struct max_serdes_source *source;
-
-		/* 1) sources 必須存在 */
-		if (!priv->sources) {
-			dev_err(priv->dev, "HACK: priv->sources is NULL\n");
-			return -ENOMEM; /* 或 return 0; 依你流程 */
-		}
-
-		/* 2) source 物件要是長壽命（priv->sources[]），並初始化乾淨 */
-		source = &priv->sources[0];
-		memset(source, 0, sizeof(*source));
-		source->index = 0;   /* ser pad0 (Sink) */
-		source->pad   = 0;   /* 先預設 remote pad=0，notify_bound 會再修正/覆寫 */
-		source->sd    = NULL;
-
-		dev_info(priv->dev, "HACK: waiting for ISX031 (0x1a) on Mux Bus %d\n",
-			mux_adap->nr);
-
-		/* 3) 加 I2C waiter（注意：mux_adap->nr 不是 i2c-1，是 mux 出來的 i2c-19） */
-		asc = v4l2_async_nf_add_i2c(&priv->nf, mux_adap->nr, 0x1a,
-						struct max_serdes_asc);
-		if (!IS_ERR(asc)) {
-			asc->source = source; /* ★這行一定要有，而且必須指向 priv->sources[] */
-			dev_info(priv->dev, "HACK: added async waiter for isx031\n");
-		} else {
-			dev_err(priv->dev, "HACK: add_i2c waiter failed: %ld\n", PTR_ERR(asc));
-		}
-	}
-
-	/* 註冊 Notifier，這會啟動 V4L2 的 Async 媒合機制 */
 	priv->nf.ops = &max_ser_notify_ops;
+
 	ret = v4l2_async_nf_register(&priv->nf);
 	if (ret) {
-		dev_err(priv->dev, "Failed to register subdev notifier\n");
+		dev_err(priv->dev, "[SER] Failed to register subdev notifier: %d\n", ret);
 		v4l2_async_nf_cleanup(&priv->nf);
 		return ret;
 	}
-	
+
 	return 0;
 }
 
