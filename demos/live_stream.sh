@@ -5,10 +5,10 @@ if  [ $# -lt 5 ] ; then
     echo "usage: ./live-stream.sh [DeviceName] [Port] [ISYS Capture Channel] [Resolution] [Format] [Mode]"
     echo -e "Options for [Mode]: live (default), picture, record"
     echo -e "Examples:"
-    echo -e "  Live View:  ./live-stream.sh 'ov5647' 0 0 1296x972 SBGGR10_1X10 live"
-    echo -e "  Live View:  ./live-stream.sh 'imx477' 1 8 4056x3040 SRGGB12_1X12 live"
-    echo -e "  Take Photo: ./live-stream.sh 'imx708' 0 0 4608x2592 SRGGB10_1X10 picture"
-    echo -e "  Recording:  ./live-stream.sh 'imx219' 0 0 1640x1232 SGRBG10_1X10 record"
+    echo -e "  Live View:  ./live_stream.sh 'ov5647' 0 0 1296x972 SBGGR10_1X10 live"
+    echo -e "  Live View:  ./live_stream.sh 'imx477' 1 8 4056x3040 SRGGB12_1X12 live"
+    echo -e "  Take Photo: ./live_stream.sh 'imx708' 0 0 4608x2592 SRGGB10_1X10 picture"
+    echo -e "  Recording:  ./live_stream.sh 'imx219' 0 0 1640x1232 SGRBG10_1X10 record"
     exit 1
 fi
 
