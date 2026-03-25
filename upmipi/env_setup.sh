@@ -1,12 +1,13 @@
 #!/bin/bash
 RED='\033[0;31m'
+NC='\033[0m' # No Color/Reset
 
-## kernel limit 6.10+
+## kernel limit 6.14+
 is_ver_over(){
     return $(uname -r | awk -F '.' '{
         if ($1 < 6) { print 1; }
         else if ($1 == 6) {
-            if ($2 <= 10) { print 1; }
+            if ($2 < 14) { print 1; }
             else { print 0; }
         }
         else { print 0; }
@@ -18,13 +19,12 @@ if is_ver_over
 then
     echo $(uname -r)
 else
-    echo "Kernel version is less than 6.10"
+    echo "Kernel version is less than 6.14"
     exit
 fi
 
 ## build & install kernel modules
 sudo apt install build-essential
-cd ipu6
 make
 if [ $? -ne 0 ]
 then
@@ -48,12 +48,11 @@ libgstreamer-plugins-bad1.0-0 \
 gstreamer1.0-plugins-ugly \
 libexpat1-dev libdrm-dev v4l-utils yavta python-is-python3 python3-venv
 
-## user space library files
-sudo cp -r etc/* /etc/
-sudo cp -r usr/* /usr/
-
+sudo usermod -aG video $USER
+sudo usermod -aG render $USER
 sudo depmod -a
 
+echo -e "${RED}Please reboot your system.......${NC}" 
 
 
 
