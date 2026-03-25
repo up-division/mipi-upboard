@@ -8,7 +8,7 @@ import cv2
 # ==========================================
 # 1. 感測器設定檔 (Sensor Profiles)
 # ==========================================
-ov_gain = 2.2
+ov_gain = 1.5
 SENSOR_PROFILES = {
     "imx219": {
         "width": 3280,
@@ -36,7 +36,34 @@ SENSOR_PROFILES = {
         "gamma": 2.2,
         "gains": (1.2*2.81, 1.2*2.0, 1.2*2.42),
         "bit_depth": 10
-    }
+    },
+    "imx477-12": {
+        "width": 4056,     
+        "height": 3040,
+        "pattern": "RGGB",
+        "black_level": 256,
+        "gamma": 2.2,
+        "gains": (1.2*2.81, 1.2*2.0, 1.2*2.42),
+        "bit_depth": 12
+    },
+    "imx477-10": {
+        "width": 1332,     
+        "height": 990,
+        "pattern": "RGGB",
+        "black_level": 64,
+        "gamma": 2.2,
+        "gains": (1.2*2.81, 1.2*2.0, 1.2*2.42),
+        "bit_depth": 10
+    },    
+    "isx031": {
+        "width": 1920,     
+        "height": 1536,
+        "pattern": "UYVY",
+        "black_level": 64,
+        "gamma": 1,
+        "gains": (1, 1, 1),
+        "bit_depth": 16
+    }    
 }
 
 # ==========================================
@@ -51,6 +78,8 @@ OPENCV_BAYER_CODE = {
     "GRBG": cv2.COLOR_BayerGR2BGR,
     "GBRG": cv2.COLOR_BayerGB2BGR,
     "BGGR": cv2.COLOR_BayerBG2BGR,
+    "UYVY": cv2.COLOR_BayerBG2BGR,
+#    "UYVY": cv2.COLOR_BGR2YUV_YUYV,
 }
 
 
@@ -92,7 +121,7 @@ def main():
     parser = argparse.ArgumentParser(description="Unified Camera App")
     
     parser.add_argument("--sensor", type=str, required=True, 
-                        choices=["imx219", "ov5647", "imx708"],
+                        choices=["imx219", "ov5647", "imx708", "imx477-12", "imx477-10", "isx031"],
                         help="Choose sensor profile")
     
     parser.add_argument("--mode", type=str, default=MODE_LIVE, 

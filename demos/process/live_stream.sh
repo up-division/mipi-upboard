@@ -6,6 +6,7 @@ if  [ $# -lt 5 ] ; then
     echo -e "Options for [Mode]: live (default), picture, record"
     echo -e "Examples:"
     echo -e "  Live View:  ./live-stream.sh 'ov5647' 0 0 1296x972 SBGGR10_1X10 live"
+    echo -e "  Live View:  ./live-stream.sh 'imx477' 1 8 4056x3040 SRGGB12_1X12 live"
     echo -e "  Take Photo: ./live-stream.sh 'imx708' 0 0 4608x2592 SRGGB10_1X10 picture"
     echo -e "  Recording:  ./live-stream.sh 'imx219' 0 0 1640x1232 SGRBG10_1X10 record"
     exit 1
@@ -36,7 +37,7 @@ HEIGHT=${RESOLUTION#*x}
 CSI2PORT="Intel IPU6 CSI2 $PORT"
 ISYSCAPTURE="Intel IPU6 ISYS Capture $ISYS"
 
-if [[ "$DEV" =~ "imx477" ]]; then WIDTH=$((WIDTH+8)); fi
+#if [[ "$DEV" =~ "imx477" ]]; then WIDTH=$((WIDTH+8)); fi
 
 # ==========================================
 # 4. 格式翻譯與曝光重置邏輯
@@ -48,6 +49,8 @@ elif [[ "$VFMT" == "SBGGR10" ]]; then V4L2_FMT="BG10"
 elif [[ "$VFMT" == "SGRBG10" ]]; then V4L2_FMT="BA10"
 elif [[ "$VFMT" == "SGBRG10" ]]; then V4L2_FMT="GB10"
 elif [[ "$VFMT" == "SRGGB10" ]]; then V4L2_FMT="RG10"
+elif [[ "$VFMT" == "UYVY8" ]]; then V4L2_FMT="UYVY"
+elif [[ "$VFMT" == "UYVY16" ]]; then V4L2_FMT="UYVY"
 fi
 
 # 設定管線 (需 sudo 權限)
@@ -71,10 +74,25 @@ if [[ "$DEV" == *"ov5647"* ]]; then
 elif [[ "$DEV" == *"imx708"* ]]; then
     SENSOR_TYPE="imx708"
     echo "Resetting Exposure (IMX708)..."
-    v4l2-ctl -d $SUBDEV --set-ctrl exposure=1000 2>/dev/null
+    v4l2-ctl -d $SUBDEV --set-ctrl exposure=2000 2>/dev/null
     v4l2-ctl -d $SUBDEV --set-ctrl analogue_gain=256 2>/dev/null
     v4l2-ctl -d $SUBDEV --set-ctrl vertical_blanking=41 2>/dev/null
-
+elif [[ "$DEV" == *"imx477"* ]]; then
+    if [[ "$V4L2_FMT" == "RG12" ]]; then
+        SENSOR_TYPE="imx477-12"
+    else
+        SENSOR_TYPE="imx477-10"
+    fi
+    echo "Resetting Exposure (IMX477)..."
+    v4l2-ctl -d $SUBDEV --set-ctrl exposure=2000 2>/dev/null
+    v4l2-ctl -d $SUBDEV --set-ctrl analogue_gain=512 2>/dev/null
+    v4l2-ctl -d $SUBDEV --set-ctrl vertical_blanking=41 2>/dev/null
+elif [[ "$DEV" == *"isx031"* ]]; then
+    SENSOR_TYPE="isx031"
+    echo "Resetting Exposure (ISX031)..."
+    v4l2-ctl -d $SUBDEV --set-ctrl exposure=1000 2>/dev/null
+    v4l2-ctl -d $SUBDEV --set-ctrl analogue_gain=128 2>/dev/null
+    v4l2-ctl -d $SUBDEV --set-ctrl vertical_blanking=41 2>/dev/null
 else
     SENSOR_TYPE="imx219"
     echo "Resetting Exposure (IMX219)..."
@@ -90,10 +108,14 @@ echo "Dev: $SENSOR_TYPE | Res: $WIDTH x $HEIGHT | Mode: $MODE"
 # ==========================================
 
 # 基礎 V4L2 指令 (抓圖)
-CMD_V4L2="v4l2-ctl -d $CAPTURE_DEV --set-fmt-video=width=$WIDTH,height=$HEIGHT,pixelformat=$V4L2_FMT --stream-mmap --stream-count=0 --stream-to=-"
+CMD_V4L2="v4l2-ctl -d $CAPTURE_DEV --set-fmt-video=width=$WIDTH,height=$HEIGHT,pixelformat=$V4L2_FMT --stream-mmap --stream-count=-1 --stream-to=-"
+
+echo $CMD_V4L2
 
 # 基礎 Python 指令 (修圖)
 CMD_PYTHON="python3 camera_app.py --sensor $SENSOR_TYPE --width $WIDTH --height $HEIGHT --mode $MODE"
+
+echo $CMD_PYTHON
 
 if [ "$MODE" == "record" ]; then
     # --- 錄影模式 (需要計算縮放後的解析度給 GStreamer) ---
