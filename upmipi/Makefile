@@ -6,19 +6,9 @@
 CONFIG_MODULE_SIG:=n
 
 # camera sensors
-# export CONFIG_VIDEO_HM11B1 = m
-# export CONFIG_VIDEO_OV01A1S = m
-# export CONFIG_VIDEO_OV01A10 = m
-# export CONFIG_VIDEO_OV02C10 = m
-# export CONFIG_VIDEO_OV02E10 = m
-# export CONFIG_VIDEO_HM2170 = m
-# export CONFIG_VIDEO_HM2172 = m
-# export CONFIG_VIDEO_HI556 = m
 export CONFIG_VIDEO_AR0234 = m
 export CONFIG_VIDEO_LT6911UXC = m
 export CONFIG_VIDEO_LT6911UXE = m
-# export CONFIG_VIDEO_D4XX = m
-# export CONFIG_VIDEO_TI960 = m
 export CONFIG_VIDEO_IMX390 = m
 export CONFIG_VIDEO_IMX477 = m
 export CONFIG_VIDEO_IMX708 = m
@@ -27,14 +17,8 @@ export CONFIG_VIDEO_OV5647 = m
 
 
 
-subdir-ccflags-y += -I$(src)/include/ \
-	-DCONFIG_VIDEO_V4L2_SUBDEV_API
 subdir-ccflags-$(CONFIG_IPU_BRIDGE) += \
 	-DCONFIG_IPU_BRIDGE
-subdir-ccflags-$(CONFIG_INTEL_SKL_INT3472) += \
-	-DCONFIG_INTEL_SKL_INT3472
-subdir-ccflags-$(CONFIG_POWER_CTRL_LOGIC) += \
-	-DCONFIG_POWER_CTRL_LOGIC
 subdir-ccflags-y += $(subdir-ccflags-m)
 
 KVERSION := $(shell uname -r)
@@ -42,16 +26,8 @@ KERNEL_SRC ?= /lib/modules/$(KVERSION)/build
 MODSRC := $(shell pwd)
 
 obj-$(CONFIG_IPU_BRIDGE) += drivers/media/pci/intel/ipu-bridge.o
-#obj-$(CONFIG_VIDEO_INTEL_IPU6)	+= drivers/media/pci/intel/ipu6/
-#obj-$(CONFIG_VIDEO_INTEL_IPU6)	+= drivers/media/pci/intel/ipu6/psys/
 obj-y += drivers/media/i2c/
 #obj-y += drivers/media/i2c/gmsl
-
-
-ccflags-y += -I$(srcpath)/$(src)/../../../../../include/
-ccflags-y += -I$(srcpath)/$(src)/psys/
-ccflags-y += -I$(srcpath)/$(src)/../
-ccflags-y += -I$(srcpath)/$(src)/
 
 all:
 	$(MAKE) -C $(KERNEL_SRC) M=$(MODSRC) modules
