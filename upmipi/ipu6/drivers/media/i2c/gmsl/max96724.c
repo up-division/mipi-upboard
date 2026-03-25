@@ -1814,9 +1814,6 @@ static void max96724_remove(struct i2c_client *client)
 		gpiod_set_value_cansleep(priv->gpiod_poc, 0);
 }
 
-
-
-#ifdef CONFIG_ACPI
 static const struct acpi_device_id max96724_acpi_ids[] = {
     { "MAX96724", (kernel_ulong_t)&max96724_info },  
     { "APR96724", (kernel_ulong_t)&max96724_info },  /* Add approgmsl compatible ID */
@@ -1824,7 +1821,7 @@ static const struct acpi_device_id max96724_acpi_ids[] = {
     { }
 };
 MODULE_DEVICE_TABLE(acpi, max96724_acpi_ids);
-#else
+
 static const struct of_device_id max96724_of_table[] = {
 	{ .compatible = "maxim,max96712", .data = &max96712_info },
 	{ .compatible = "maxim,max96724", .data = &max96724_info },
@@ -1833,7 +1830,6 @@ static const struct of_device_id max96724_of_table[] = {
 	{ },
 };
 MODULE_DEVICE_TABLE(of, max96724_of_table);
-#endif
 
 static struct i2c_driver max96724_i2c_driver = {
     .driver = {
