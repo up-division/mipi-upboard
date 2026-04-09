@@ -15,12 +15,6 @@
 #include <uapi/linux/media-bus-format.h>
 
 #include "max_serdes.h"
-
-const char * const max_serdes_tpg_patterns[] = {
-	[MAX_SERDES_TPG_PATTERN_GRADIENT] = "Gradient",
-	[MAX_SERDES_TPG_PATTERN_CHECKERBOARD] = "Checkerboard",
-};
-
 static const char * const max_gmsl_versions[] = {
 	[MAX_SERDES_GMSL_2_3GBPS] = "GMSL2 3Gbps",
 	[MAX_SERDES_GMSL_2_6GBPS] = "GMSL2 6Gbps",
@@ -34,6 +28,7 @@ const char *max_serdes_gmsl_version_str(enum max_serdes_gmsl_version version)
 
 	return max_gmsl_versions[version];
 }
+EXPORT_SYMBOL_NS_GPL(max_serdes_gmsl_version_str, "MAX_SERDES");
 
 static const char * const max_gmsl_mode[] = {
 	[MAX_SERDES_GMSL_PIXEL_MODE] = "pixel",
@@ -47,6 +42,7 @@ const char *max_serdes_gmsl_mode_str(enum max_serdes_gmsl_mode mode)
 
 	return max_gmsl_mode[mode];
 }
+EXPORT_SYMBOL_NS_GPL(max_serdes_gmsl_mode_str, "MAX_SERDES");
 
 static const struct max_serdes_mipi_format max_serdes_mipi_formats[] = {
 	{ MIPI_CSI2_DT_EMBEDDED_8B, 8 },
@@ -283,127 +279,6 @@ int max_serdes_get_streams_masks(struct device *dev,
 		streams_masks[pad] &= ~updated_streams_mask;
 
 	*new_streams_masks = streams_masks;
-
-	return 0;
-}
-
-static const struct videomode max_serdes_tpg_pixel_videomodes[] = {
-	{
-		.pixelclock = 25000000,
-		.hactive = 640,
-		.hfront_porch = 10,
-		.hsync_len = 96,
-		.hback_porch = 40,
-		.vactive = 480,
-		.vfront_porch = 2,
-		.vsync_len = 24,
-		.vback_porch = 24,
-	},
-	{
-		.pixelclock = 75000000,
-		.hactive = 1920,
-		.hfront_porch = 88,
-		.hsync_len = 44,
-		.hback_porch = 148,
-		.vactive = 1080,
-		.vfront_porch = 4,
-		.vsync_len = 16,
-		.vback_porch = 36,
-	},
-	{
-		.pixelclock = 150000000,
-		.hactive = 1920,
-		.hfront_porch = 88,
-		.hsync_len = 44,
-		.hback_porch = 148,
-		.vactive = 1080,
-		.vfront_porch = 4,
-		.vsync_len = 16,
-		.vback_porch = 36,
-	},
-};
-
-static void max_serdes_get_vm_timings(const struct videomode *vm,
-				      struct max_serdes_tpg_timings *timings)
-{
-	u32 hact = vm->hactive;
-	u32 hfp = vm->hfront_porch;
-	u32 hsync = vm->hsync_len;
-	u32 hbp = vm->hback_porch;
-	u32 htot = hact + hfp + hbp + hsync;
-
-	u32 vact = vm->vactive;
-	u32 vfp = vm->vfront_porch;
-	u32 vsync = vm->vsync_len;
-	u32 vbp = vm->vback_porch;
-	u32 vtot = vact + vfp + vbp + vsync;
-
-	*timings = (struct max_serdes_tpg_timings) {
-		.gen_vs = true,
-		.gen_hs = true,
-		.gen_de = true,
-		.vs_inv = true,
-		.vs_dly = 0,
-		.vs_high = vsync * htot,
-		.vs_low = (vact + vfp + vbp) * htot,
-		.v2h = 0,
-		.hs_high = hsync,
-		.hs_low = hact + hfp + hbp,
-		.hs_cnt = vact + vfp + vbp + vsync,
-		.v2d = htot * (vsync + vbp) + (hsync + hbp),
-		.de_high = hact,
-		.de_low = hfp + hsync + hbp,
-		.de_cnt = vact,
-		.clock = vm->pixelclock,
-		.fps = DIV_ROUND_CLOSEST(vm->pixelclock, vtot * htot),
-	};
-}
-
-int max_serdes_get_tpg_timings(const struct max_serdes_tpg_entry *entry,
-			       struct max_serdes_tpg_timings *timings)
-{
-	u32 fps;
-
-	if (!entry)
-		return 0;
-
-	fps = DIV_ROUND_CLOSEST(1 * entry->interval.denominator,
-				entry->interval.numerator);
-
-	for (unsigned int i = 0; i < ARRAY_SIZE(max_serdes_tpg_pixel_videomodes); i++) {
-		struct max_serdes_tpg_timings vm_timings;
-		const struct videomode *vm;
-
-		vm = &max_serdes_tpg_pixel_videomodes[i];
-
-		max_serdes_get_vm_timings(vm, &vm_timings);
-
-		if (vm->hactive == entry->width &&
-		    vm->vactive == entry->height &&
-		    vm_timings.fps == fps) {
-			*timings = vm_timings;
-			return 0;
-		}
-	}
-
-	return -EINVAL;
-}
-EXPORT_SYMBOL_NS_GPL(max_serdes_get_tpg_timings, "MAX_SERDES");
-
-int max_serdes_validate_tpg_routing(struct v4l2_subdev_krouting *routing)
-{
-	const struct v4l2_subdev_route *route;
-
-	if (routing->num_routes != 1)
-		return -EINVAL;
-
-	route = &routing->routes[0];
-
-	if (!(route->flags & V4L2_SUBDEV_ROUTE_FL_ACTIVE))
-		return -EINVAL;
-
-	if (route->sink_stream != MAX_SERDES_TPG_STREAM)
-		return -EINVAL;
 
 	return 0;
 }

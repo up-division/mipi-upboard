@@ -62,9 +62,6 @@ struct max_ser_ops {
 	unsigned int num_vc_remaps;
 
 	struct max_serdes_phys_configs phys_configs;
-	struct max_serdes_tpg_entries tpg_entries;
-	enum max_serdes_gmsl_mode tpg_mode;
-	unsigned int tpg_patterns;
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	int (*reg_read)(struct max_ser *ser, unsigned int reg, unsigned int *val);
@@ -77,7 +74,6 @@ struct max_ser_ops {
 	int (*set_i2c_xlate)(struct max_ser *ser, unsigned int i,
 			     struct max_serdes_i2c_xlate *i2c_xlate);
 	int (*set_tunnel_enable)(struct max_ser *ser, bool enable);
-	int (*set_tpg)(struct max_ser *ser, const struct max_serdes_tpg_entry *entry);
 	int (*init_phy)(struct max_ser *ser, struct max_ser_phy *phy);
 	int (*set_phy_active)(struct max_ser *ser, struct max_ser_phy *phy,
 			      bool enable);
@@ -99,6 +95,8 @@ struct max_ser_ops {
 	unsigned int (*get_pipe_stream_id)(struct max_ser *ser, struct max_ser_pipe *pipe);
 	int (*set_pipe_phy)(struct max_ser *ser, struct max_ser_pipe *pipe,
 			    struct max_ser_phy *phy);
+	int (*pre_stream)(struct max_ser *ser);
+	int (*post_stream)(struct max_ser *ser);
 };
 
 struct max_ser_priv;
@@ -112,8 +110,6 @@ struct max_ser {
 
 	struct max_ser_phy *phys;
 	struct max_ser_pipe *pipes;
-	const struct max_serdes_tpg_entry *tpg_entry;
-	enum max_serdes_tpg_pattern tpg_pattern;
 
 	struct max_serdes_vc_remap *vc_remaps;
 	unsigned int num_vc_remaps;

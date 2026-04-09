@@ -31,14 +31,12 @@
 #define MAX_SERDES_PHYS_MAX		4
 #define MAX_SERDES_STREAMS_NUM		4
 #define MAX_SERDES_VC_ID_NUM		4
-#define MAX_SERDES_TPG_STREAM		0
 
 #define MAX_SERDES_GRAD_INCR		4
 #define MAX_SERDES_CHECKER_COLOR_A	0x00ccfe
 #define MAX_SERDES_CHECKER_COLOR_B	0xa76a00
 #define MAX_SERDES_CHECKER_SIZE		60
 
-extern const char * const max_serdes_tpg_patterns[];
 
 enum max_serdes_gmsl_version {
 	MAX_SERDES_GMSL_MIN,
@@ -53,12 +51,6 @@ enum max_serdes_gmsl_mode {
 	MAX_SERDES_GMSL_TUNNEL_MODE,
 };
 
-enum max_serdes_tpg_pattern {
-	MAX_SERDES_TPG_PATTERN_MIN,
-	MAX_SERDES_TPG_PATTERN_CHECKERBOARD = MAX_SERDES_TPG_PATTERN_MIN,
-	MAX_SERDES_TPG_PATTERN_GRADIENT,
-	MAX_SERDES_TPG_PATTERN_MAX = MAX_SERDES_TPG_PATTERN_GRADIENT,
-};
 
 struct max_serdes_phys_config {
 	unsigned int lanes[MAX_SERDES_PHYS_MAX];
@@ -99,50 +91,6 @@ struct max_serdes_asc {
 	struct max_serdes_source *source;
 };
 
-struct max_serdes_tpg_entry {
-	u32 width;
-	u32 height;
-	struct v4l2_fract interval;
-	u32 code;
-	u8 dt;
-	u8 bpp;
-};
-
-#define MAX_TPG_ENTRY_640X480P60_RGB888 \
-	{ 640, 480, { 1, 60 }, MEDIA_BUS_FMT_RGB888_1X24, MIPI_CSI2_DT_RGB888, 24 }
-
-#define MAX_TPG_ENTRY_1920X1080P30_RGB888 \
-	{ 1920, 1080, { 1, 30 }, MEDIA_BUS_FMT_RGB888_1X24, MIPI_CSI2_DT_RGB888, 24 }
-
-#define MAX_TPG_ENTRY_1920X1080P60_RGB888 \
-	{ 1920, 1080, { 1, 60 }, MEDIA_BUS_FMT_RGB888_1X24, MIPI_CSI2_DT_RGB888, 24 }
-
-struct max_serdes_tpg_entries {
-	const struct max_serdes_tpg_entry *entries;
-	unsigned int num_entries;
-};
-
-struct max_serdes_tpg_timings {
-	bool gen_vs;
-	bool gen_hs;
-	bool gen_de;
-	bool vs_inv;
-	bool hs_inv;
-	bool de_inv;
-	u32 vs_dly;
-	u32 vs_high;
-	u32 vs_low;
-	u32 v2h;
-	u32 hs_high;
-	u32 hs_low;
-	u32 hs_cnt;
-	u32 v2d;
-	u32 de_high;
-	u32 de_low;
-	u32 de_cnt;
-	u32 clock;
-	u32 fps;
-};
 
 static inline struct max_serdes_asc *asc_to_max(struct v4l2_async_connection *asc)
 {
@@ -175,9 +123,5 @@ int max_serdes_get_streams_masks(struct device *dev,
 				 u32 num_pads, u64 *old_streams_masks,
 				 u64 **new_streams_masks, bool enable);
 
-int max_serdes_get_tpg_timings(const struct max_serdes_tpg_entry *entry,
-			       struct max_serdes_tpg_timings *timings);
-
-int max_serdes_validate_tpg_routing(struct v4l2_subdev_krouting *routing);
 
 #endif // MAX_SERDES_H

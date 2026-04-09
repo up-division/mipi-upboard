@@ -79,9 +79,6 @@ struct max_des_ops {
 	bool needs_unique_stream_id;
 
 	struct max_serdes_phys_configs phys_configs;
-	struct max_serdes_tpg_entries tpg_entries;
-	enum max_serdes_gmsl_mode tpg_mode;
-	unsigned int tpg_patterns;
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	int (*reg_read)(struct max_des *des, unsigned int reg, unsigned int *val);
@@ -91,7 +88,6 @@ struct max_des_ops {
 	int (*log_pipe_status)(struct max_des *des, struct max_des_pipe *pipe);
 	int (*log_phy_status)(struct max_des *des, struct max_des_phy *phy);
 	int (*set_enable)(struct max_des *des, bool enable);
-	int (*set_tpg)(struct max_des *des, const struct max_serdes_tpg_entry *entry);
 	int (*init)(struct max_des *des);
 	int (*init_phy)(struct max_des *des, struct max_des_phy *phy);
 	int (*set_phy_mode)(struct max_des *des, struct max_des_phy *phy,
@@ -124,6 +120,7 @@ struct max_des_ops {
 	int (*select_links)(struct max_des *des, unsigned int mask);
 	int (*set_link_version)(struct max_des *des, struct max_des_link *link,
 				enum max_serdes_gmsl_version version);
+	int (*stream_prepare)(struct max_des *des);
 };
 
 struct max_des_priv;
@@ -136,8 +133,6 @@ struct max_des {
 	struct max_des_phy *phys;
 	struct max_des_pipe *pipes;
 	struct max_des_link *links;
-	const struct max_serdes_tpg_entry *tpg_entry;
-	enum max_serdes_tpg_pattern tpg_pattern;
 
 	unsigned int phys_config;
 	enum max_serdes_gmsl_mode mode;
