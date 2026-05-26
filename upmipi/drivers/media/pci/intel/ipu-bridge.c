@@ -100,7 +100,17 @@ static const struct ipu_sensor_config ipu_supported_sensors[] = {
 	/* Lontium lt6911uxe */
 	IPU_SENSOR_CONFIG("INTC10C5", 0),
 	/* Sensing GMSL Bridge (MAX96724) */
-	IPU_SENSOR_CONFIG("MAX96724", 1, 750000000),
+	// IPU_SENSOR_CONFIG("MAX96724", 8,
+	// 		200000000,
+	// 		700000000,
+	// 		750000000,
+	// 		800000000,
+	// 		850000000,
+	// 		900000000,
+	// 		950000000,
+	// 		1000000000,
+	// 		),
+	IPU_SENSOR_CONFIG("MAX96724", 0),
 };
 
 static const struct ipu_property_names prop_names = {
