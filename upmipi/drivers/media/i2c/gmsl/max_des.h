@@ -8,8 +8,6 @@
 
 #include <media/v4l2-mediabus.h>
 
-#include "max_serdes.h"
-
 #define MAX_DES_DT_VC(dt, vc) (((vc) & 0x3) << 6 | ((dt) & 0x3f))
 
 struct max_des_remap {
@@ -23,8 +21,6 @@ struct max_des_remap {
 struct max_des_link {
 	unsigned int index;
 	bool enabled;
-	enum max_serdes_gmsl_version version;
-	struct max_serdes_i2c_xlate ser_xlate;
 };
 
 struct max_des_pipe_mode {
@@ -78,13 +74,12 @@ struct max_des_ops {
 	bool needs_single_link_version;
 	bool needs_unique_stream_id;
 
-	struct max_serdes_phys_configs phys_configs;
-
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	int (*reg_read)(struct max_des *des, unsigned int reg, unsigned int *val);
 	int (*reg_write)(struct max_des *des, unsigned int reg, unsigned int val);
 #endif
 	int (*log_status)(struct max_des *des);
+	int (*log_reg_status)(struct max_des *des, const char *tag);
 	int (*log_pipe_status)(struct max_des *des, struct max_des_pipe *pipe);
 	int (*log_phy_status)(struct max_des *des, struct max_des_phy *phy);
 	int (*set_enable)(struct max_des *des, bool enable);
@@ -116,11 +111,7 @@ struct max_des_ops {
 			     struct max_des_pipe_mode *mode);
 	int (*set_pipe_tunnel_enable)(struct max_des *des, struct max_des_pipe *pipe,
 				      bool enable);
-	int (*init_link)(struct max_des *des, struct max_des_link *link);
 	int (*select_links)(struct max_des *des, unsigned int mask);
-	int (*set_link_version)(struct max_des *des, struct max_des_link *link,
-				enum max_serdes_gmsl_version version);
-	int (*stream_prepare)(struct max_des *des);
 };
 
 struct max_des_priv;
@@ -135,7 +126,6 @@ struct max_des {
 	struct max_des_link *links;
 
 	unsigned int phys_config;
-	enum max_serdes_gmsl_mode mode;
 	bool active;
 	bool streaming_preconfigured;
 };

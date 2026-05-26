@@ -27,7 +27,7 @@ MODSRC := $(shell pwd)
 
 obj-$(CONFIG_IPU_BRIDGE) += drivers/media/pci/intel/ipu-bridge.o
 obj-y += drivers/media/i2c/
-#obj-y += drivers/media/i2c/gmsl
+obj-y += drivers/media/i2c/gmsl
 
 all:
 	$(MAKE) -C $(KERNEL_SRC) M=$(MODSRC) modules
