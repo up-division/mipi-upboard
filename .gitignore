@@ -1,3 +1,14 @@
-*.bak
-demos/process/mipi-up/
+
+mipi-up/
 __pycache__/
+*cmd
+*.o
+*.ko
+*.mod
+*.systems
+*.order
+*.raw
+*.png
+*.jpg
+*.mp4
+*.systems
