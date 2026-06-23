@@ -34,6 +34,11 @@
 #include "ipu6-platform-isys-csi2-reg.h"
 #include "ipu6-platform-regs.h"
 
+
+static unsigned int isys_freq_override;
+module_param(isys_freq_override, uint, 0644);
+MODULE_PARM_DESC(isys_freq_override, "Override ISYS freq(mhz)");
+
 #define IPU6_PCI_BAR		0
 
 struct ipu6_cell_program {
@@ -392,8 +397,18 @@ ipu6_isys_init(struct pci_dev *pdev, struct device *parent,
 	pdata->base = base;
 	pdata->ipdata = ipdata;
 
+	/* Override the ISYS frequency if requested */
+	isys_freq_override = 400;
+	if (isys_freq_override >= BUTTRESS_MIN_FORCE_IS_FREQ &&
+		isys_freq_override <= BUTTRESS_MAX_FORCE_IS_FREQ) {
+		ctrl->ratio = isys_freq_override / BUTTRESS_IS_FREQ_STEP;
+		dev_info(&pdev->dev, "Override ISYS freq to %u MHz, ratio=%u\n",
+			isys_freq_override, ctrl->ratio);
+	}
+
 	isys_adev = ipu6_bus_initialize_device(pdev, parent, pdata, ctrl,
-					       IPU6_ISYS_NAME);
+						IPU6_ISYS_NAME);
+						
 	if (IS_ERR(isys_adev)) {
 		kfree(pdata);
 		return dev_err_cast_probe(dev, isys_adev,

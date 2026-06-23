@@ -681,6 +681,8 @@ int ipu6_isys_mcd_phy_set_power(struct ipu6_isys *isys,
 	dev_dbg(dev, "for phy %d port %d, lanes: %d\n", phy_id, port,
 		cfg->nlanes);
 
+	dev_info(dev, "[IPU-MCD] config DPHY");
+
 	if (!isys_base || port >= isys->pdata->ipdata->csi2.nports) {
 		dev_warn(dev, "invalid port ID %d\n", port);
 		return -EINVAL;

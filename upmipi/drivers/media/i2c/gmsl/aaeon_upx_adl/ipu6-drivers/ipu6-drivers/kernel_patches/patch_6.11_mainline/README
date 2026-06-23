@@ -1,0 +1,40 @@
+build kernel driver with community kernel version 6.11 but not iot kernel
+
+1. checkout community kernel 6.11-rc3 or later 6.11 version
+2. copy patches to kernel source tree and apply them
+    a. for ar0234 & lt6911uxe:
+       git am 0001-media-i2c-Add-ar0234-camera-sensor-driver.patch
+       git am 0002-media-i2c-add-support-for-lt6911uxe.patch
+       git am 0003-INT3472-Support-LT6911UXE.patch
+       git am 0004-upstream-Use-module-parameter-to-set-isys-freq.patch
+       git am 0005-upstream-Use-module-parameter-to-set-psys-freq.patch
+       git am 0006-media-pci-Enable-ISYS-reset.patch
+       git am 0007-media-i2c-add-support-for-ar0234-and-lt6911uxe.patch
+
+    b. for PSYS driver (the patch be integrated in NEX kernel 6.11-rc3):
+       git am 0001-driver-media-pci-intel-psys-driver.patch
+
+    c. for ARL board (these patches be integrated in NEX kernel 6.11-rc3,
+                      but not be included in community kernel 6.11):
+       git am 0001-pinctrl-intel-add-acpi-id-for-arrow-lake.patch
+       git am 0002-mfd-add-ARL-H-PCI-driver-ID.patch
+
+    d. for USB device need to apply below 2 patches, they are merged to kernel 6.13.
+       0001-media-intel-ipu6-do-not-handle-interrupts-when-devic.patch
+       0002-media-intel-ipu6-remove-buttress-ish-structure.patch
+
+3. build kernel driver
+   copy kernel config to kernel source dir
+
+   KERNEL_BUILD_LABEL="-for-upstream"
+   make kernelversion
+   echo "" | make -j16 LOCALVERSION=${KERNEL_BUILD_LABEL} oldconfig
+   make -j16 LOCALVERSION=${KERNEL_BUILD_LABEL}
+   make -j16 LOCALVERSION=${KERNEL_BUILD_LABEL} bindeb-pkg
+
+build kernel driver for Intel IMX390&TI960 drivers with iot kernel 6.11-rc3
+
+1. checkout iot kernel 6.11-rc3
+2. copy patches in "for_imx390" folder to kernel source tree and apply them
+3. build kernel driver
+   

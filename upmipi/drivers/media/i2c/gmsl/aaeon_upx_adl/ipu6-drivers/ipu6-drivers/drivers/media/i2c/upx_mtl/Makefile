@@ -1,0 +1,1 @@
+obj-m		+= sg3s_isx031c_g2f.o

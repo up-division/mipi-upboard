@@ -1,0 +1,5 @@
+0xd5a48901	max9x_common_init_i2c_client	max9x	EXPORT_SYMBOL	
+0x678b7c26	max9x_destroy	max9x	EXPORT_SYMBOL	
+0x4ff8b6c5	max9x_serdes_mhz_to_rate	max9x	EXPORT_SYMBOL	
+0xf716416e	max9x_sd_to_common	max9x	EXPORT_SYMBOL	
+0x6529ee3c	max9x_client_to_common	max9x	EXPORT_SYMBOL	

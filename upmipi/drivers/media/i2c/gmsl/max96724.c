@@ -14,16 +14,19 @@
 #include <linux/limits.h>
 
 #include "max_des.h"
+#include "mipi-upboard.h"
 
 #define MAX96724_MULTI_LINKS 4
 
-#define DES_TEST_DPLL_REG        0x0f
+#define DES_TEST_DPLL_REG        0x19
 #define DES_TEST_LINK_FREQ_HZ    DES_TEST_DPLL_REG * 50000000ULL
 #define DES_TEST_RATE_NAME       "1.6Gbps/lane, link_freq=800MHz"
 
 #define XTREMEI14_PHY_MAP 0x4b
+#define MAX96724_UP_GPIO_BASE 512
 
-#define DESKEW_INIT 0x00
+
+#define DESKEW_INIT 0x87
 #define DESKEW_PRO  0x00
 
 
@@ -43,11 +46,87 @@ struct max96724_priv {
 	bool des_hw_inited;
 };
 
-static struct max96724_priv *max96724_runtime_priv;
 
 static inline struct max96724_priv *des_to_priv(struct max_des *des)
 {
 	return container_of(des, struct max96724_priv, des);
+}
+
+static int max96724_upboard_pwren_gpio(struct i2c_client *client, bool enable)
+{
+	struct device *dev = &client->dev;
+	struct upmipi_gpios *gpio_info;
+	unsigned int idx;
+	int gpio;
+	int ret;
+
+	gpio_info = mipi_upboard_gpios();
+	if (!gpio_info) {
+		dev_info(dev, "[MAX96724-PWR] no UP MIPI GPIO table, skip\n");
+		return 0;
+	}
+
+	dev_info(dev, "[MAX96724-PWR] i2c adaptor nr:%d\n", client->adapter->nr);
+
+	/*
+	 * Follow UP MIPI convention:
+	 *   adapter 0/1/2 -> CAM1 reset / power enable path
+	 *   adapter 3/4/5 -> CAM2 reset / power enable path
+	 *
+	 * For UPX-MTL01 / UPX-ARL01:
+	 *   CAM1_RST offset = 397
+	 *   CAM2_RST offset = 113
+	 * Legacy GPIO number = gpiochip0 base 512 + offset.
+	 */
+	switch (client->adapter->nr) {
+	case 0:
+	case 1:
+	case 2:
+		idx = 0; /* UPBOARD_CAM1_RESET */
+		break;
+	case 3:
+	case 4:
+	case 5:
+		idx = 2; /* UPBOARD_CAM2_RESET */
+		break;
+	default:
+		dev_info(dev,
+			 "[MAX96724-PWR] adapter %d does not map to CAM1/CAM2 GPIO, skip\n",
+			 client->adapter->nr);
+		return 0;
+	}
+
+	if (idx >= gpio_info->ngpio) {
+		dev_warn(dev, "[MAX96724-PWR] GPIO index %u out of range, ngpio=%d\n",
+			 idx, gpio_info->ngpio);
+		return 0;
+	}
+
+	gpio = gpio_info->gpios[idx].offset + MAX96724_UP_GPIO_BASE;
+
+	ret = gpio_request(gpio, gpio_info->gpios[idx].name);
+	if (ret && ret != -EBUSY) {
+		dev_warn(dev, "[MAX96724-PWR] gpio_request %s GPIO%d failed: %d\n",
+			 gpio_info->gpios[idx].name, gpio, ret);
+		return ret;
+	}
+
+	ret = gpio_direction_output(gpio, enable ? 1 : 0);
+	if (ret) {
+		dev_warn(dev, "[MAX96724-PWR] set %s GPIO%d %s failed: %d\n",
+			 gpio_info->gpios[idx].name, gpio,
+			 enable ? "HIGH" : "LOW", ret);
+		return ret;
+	}
+
+	dev_info(dev, "[MAX96724-PWR] %s GPIO%d offset=%d set %s\n",
+		 gpio_info->gpios[idx].name, gpio, gpio_info->gpios[idx].offset,
+		 enable ? "HIGH" : "LOW");
+
+	if (enable)
+		msleep(10);
+
+	return 0;
 }
 
 static const struct regmap_config max96724_i2c_regmap = {
@@ -796,16 +875,6 @@ static int max96724_des_init(struct max_des *des)
 	if (priv->des_hw_inited)
 		return 0;
 
-	/* Disable all link */
-	ret = max96724_link_enable(priv, 0x00);
-	if (ret)
-		return ret;
-
-	/* PHY Seting */
-	ret = max96724_phy_init(priv);
-	if (ret)
-		return ret;
-
 	/* Link Setting */
 	ret = max96724_link_init(priv);
 	if (ret)
@@ -813,6 +882,11 @@ static int max96724_des_init(struct max_des *des)
 
 	/* Pipe Setting */
 	ret = max96724_pipe_init(priv);
+	if (ret)
+		return ret;
+
+	/* PHY Seting */
+	ret = max96724_phy_init(priv);
 	if (ret)
 		return ret;
 
@@ -1301,8 +1375,6 @@ static int max96724_probe(struct i2c_client *client)
 	struct max_des_ops *ops;
 	int ret;
 
-	// dev_info(priv->dev, "MAX96724 Probing...\n");
-
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
@@ -1316,30 +1388,82 @@ static int max96724_probe(struct i2c_client *client)
 	priv->client = client;
 	i2c_set_clientdata(client, priv);
 
+	ret = max96724_upboard_pwren_gpio(client, true);
+	if (ret)
+		return ret;
+
 	priv->regmap = devm_regmap_init_i2c(client, &max96724_i2c_regmap);
-	if (IS_ERR(priv->regmap))
-		return PTR_ERR(priv->regmap);
+	if (IS_ERR(priv->regmap)) {
+		ret = PTR_ERR(priv->regmap);
+		goto err_power_off;
+	}
 
 	*ops = max96724_ops;
 	priv->des.ops = ops;
 
 	ret = max96724_reset(priv);
 	if (ret)
-		return ret;
+		goto err_power_off;
 
-	max96724_runtime_priv = priv;
+	ret = max_des_probe(client, &priv->des);
+	if (ret)
+		goto err_power_off;
 
-	return max_des_probe(client, &priv->des);
+	/*
+	 * v4l2_i2c_subdev_init() may overwrite i2c clientdata with
+	 * struct v4l2_subdev *. Restore it back to max96724_priv.
+	 */
+	i2c_set_clientdata(client, priv);
+	
+	dev_info(dev, "[MAX96724] probe done: client=%px priv=%px des.priv=%px\n",
+	 client, priv, priv->des.priv);
+
+	return 0;
+
+err_power_off:
+	max96724_upboard_pwren_gpio(client, false);
+	return ret;
 }
 
 static void max96724_remove(struct i2c_client *client)
 {
 	struct max96724_priv *priv = i2c_get_clientdata(client);
 
-	if (max96724_runtime_priv == priv)
-		max96724_runtime_priv = NULL;
+	dev_info(&client->dev, "[MAX96724] remove enter\n");
+
+	if (!priv) {
+		dev_warn(&client->dev, "[MAX96724] remove: priv is NULL\n");
+		return;
+	}
+
+	/*
+	 * Normal case:
+	 * probe() restored clientdata to max96724_priv.
+	 */
+	if (priv->client != client || priv->dev != &client->dev) {
+		dev_warn(&client->dev,
+			 "[MAX96724] remove: invalid clientdata=%px, priv->client=%px client=%px priv->dev=%px dev=%px\n",
+			 priv,
+			 priv->client,
+			 client,
+			 priv->dev,
+			 &client->dev);
+		return;
+	}
+
+	dev_info(&client->dev,
+		 "[MAX96724] remove ptrs: priv=%px des=%px des.priv=%px ops=%px\n",
+		 priv, &priv->des, priv->des.priv, priv->des.ops);
+
+	dev_info(&client->dev, "[MAX96724] remove: calling max_des_remove\n");
 
 	max_des_remove(&priv->des);
+
+	max96724_upboard_pwren_gpio(client, false);
+
+	i2c_set_clientdata(client, NULL);
+
+	dev_info(&client->dev, "[MAX96724] remove exit\n");
 }
 
 #ifdef CONFIG_ACPI

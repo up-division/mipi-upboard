@@ -7,6 +7,10 @@
 #include <linux/delay.h>
 #include <linux/i2c-mux.h>
 #include <linux/module.h>
+#include <linux/list.h>
+#include <linux/moduleparam.h>
+#include <linux/mutex.h>
+#include <linux/ktime.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 
@@ -22,7 +26,7 @@
 #define MEDIA_PAD_FL_INTERNAL 0
 #endif
 
-#define DES_TEST_DPLL_REG 0x0f
+#define DES_TEST_DPLL_REG 0x19
 #define MAX_DES_LINK_FREQUENCY_DEFAULT DES_TEST_DPLL_REG * 50000000ULL
 
 #define V4L2_FREQ MAX_DES_LINK_FREQUENCY_DEFAULT/4
@@ -37,11 +41,16 @@
 #define MAX_DES_CAM_STREAM_OFF 0x00
 #define MAX_DES_CAM_STREAM_ON  0x10
 
+#define MAX_DES_LINK_SETTLE_MS 100
+
 struct max_des_priv {
 	struct max_des *des;
 	struct device *dev;
 	struct i2c_client *client;
 	struct i2c_mux_core *mux;
+
+	struct mutex lock;
+	struct list_head hotplug_node;
 
 	struct media_pad *pads;
 	struct regulator **pocs;
@@ -160,7 +169,7 @@ static int max_des_init_one_serializer(struct max_des_priv *priv,
 		 link_id);
 
 	/* vendor script sequence */
-	ret = max_des_remote_write16(adap, 0x40, 0x02BE, 0x10);
+	ret = max_des_remote_write16(adap, 0x40, 0x02BE, MAX_DES_CAM_STREAM_OFF);
 	if (ret) return ret;
 
 	ret = max_des_remote_write16(adap, 0x40, 0x0318, 0x5E);
@@ -311,6 +320,213 @@ err_add_adapters:
 	i2c_mux_del_adapters(priv->mux);
 	return ret;
 }
+
+
+
+static int max_des_rescan_links_idle(struct max_des_priv *priv)
+{
+	struct max_des *des;
+	unsigned int i;
+	u32 detected_mask = 0;
+	u32 restore_mask;
+	ktime_t t_start;
+	s64 elapsed_ms;
+	int ret = 0;
+	int first_err = 0;
+
+	if (!priv)
+		return -EINVAL;
+
+	des = priv->des;
+	if (!des || !des->ops || !des->ops->num_links)
+		return -EINVAL;
+
+	t_start = ktime_get();
+
+	mutex_lock(&priv->lock);
+
+	if (des->active || priv->active_streams_mask) {
+		dev_warn(priv->dev,
+			 "[DES-HOTPLUG] rescan rejected: DES active=%d active_mask=0x%llx\n",
+			 des->active,
+			 (unsigned long long)priv->active_streams_mask);
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
+	if (!priv->mux) {
+		dev_err(priv->dev,
+			"[DES-HOTPLUG] rescan failed: mux not initialized\n");
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+
+	dev_info(priv->dev, "[DES-HOTPLUG] manual idle rescan start\n");
+
+	for (i = 0; i < des->ops->num_links; i++) {
+		if (!priv->mux->adapter[i]) {
+			dev_warn(priv->dev,
+				 "[DES-HOTPLUG] link%u has no mux adapter\n", i);
+			des->links[i].enabled = false;
+			continue;
+		}
+
+		if (des->ops->select_links) {
+			ret = des->ops->select_links(des, BIT(i));
+			if (ret) {
+				dev_warn(priv->dev,
+					 "[DES-HOTPLUG] link%u select failed: %d\n",
+					 i, ret);
+				des->links[i].enabled = false;
+				if (!first_err)
+					first_err = ret;
+				continue;
+			}
+		}
+
+		msleep(MAX_DES_LINK_SETTLE_MS);
+
+		ret = max_des_init_one_serializer(priv, priv->mux->adapter[i], i);
+		if (ret == -ENODEV) {
+			dev_info(priv->dev,
+				 "[DES-HOTPLUG] link%u no serializer/camera detected\n",
+				 i);
+			des->links[i].enabled = false;
+			continue;
+		}
+
+		if (ret) {
+			dev_warn(priv->dev,
+				 "[DES-HOTPLUG] link%u serializer init failed: %d\n",
+				 i, ret);
+			des->links[i].enabled = false;
+			if (!first_err)
+				first_err = ret;
+			continue;
+		}
+
+		des->links[i].enabled = true;
+		detected_mask |= BIT(i);
+
+		dev_info(priv->dev,
+			 "[DES-HOTPLUG] link%u serializer/camera detected\n",
+			 i);
+	}
+
+	priv->detected_links_mask = detected_mask;
+
+	/*
+	 * Restore link selection after destructive per-link scanning.
+	 * If no links are detected, select all physical links so the DES is
+	 * not left at only the last scanned link.
+	 */
+	if (des->ops->select_links) {
+		restore_mask = detected_mask;
+
+		if (!restore_mask)
+			restore_mask = (1U << des->ops->num_links) - 1;
+
+		ret = des->ops->select_links(des, restore_mask);
+		if (ret) {
+			dev_warn(priv->dev,
+				 "[DES-HOTPLUG] restore links failed: mask=0x%x ret=%d\n",
+				 restore_mask, ret);
+			if (!first_err)
+				first_err = ret;
+		}
+	}
+
+	elapsed_ms = ktime_ms_delta(ktime_get(), t_start);
+
+	dev_info(priv->dev,
+		 "[DES-HOTPLUG] manual idle rescan done: detected_links_mask=0x%x first_err=%d elapsed=%lld ms\n",
+		 priv->detected_links_mask, first_err, elapsed_ms);
+
+	ret = first_err;
+
+out_unlock:
+	mutex_unlock(&priv->lock);
+	return ret;
+}
+
+static LIST_HEAD(max_des_instances);
+static DEFINE_MUTEX(max_des_instances_lock);
+static int max_des_hotplug_rescan;
+
+static int max_des_hotplug_rescan_set(const char *val,
+				      const struct kernel_param *kp)
+{
+	struct max_des_priv *priv;
+	int value;
+	int ret;
+	int first_err = 0;
+	int scanned = 0;
+	int skipped = 0;
+
+	ret = kstrtoint(val, 0, &value);
+	if (ret)
+		return ret;
+
+	if (!value) {
+		max_des_hotplug_rescan = 0;
+		return 0;
+	}
+
+	mutex_lock(&max_des_instances_lock);
+
+	list_for_each_entry(priv, &max_des_instances, hotplug_node) {
+		struct max_des *des;
+
+		if (!priv || !priv->des)
+			continue;
+
+		des = priv->des;
+
+		if (des->active || priv->active_streams_mask) {
+			dev_warn(priv->dev,
+				 "[DES-HOTPLUG] manual rescan skipped: active=%d active_mask=0x%llx\n",
+				 des->active,
+				 (unsigned long long)priv->active_streams_mask);
+			skipped++;
+			continue;
+		}
+
+		dev_info(priv->dev,
+			 "[DES-HOTPLUG] manual rescan triggered by module parameter\n");
+
+		ret = max_des_rescan_links_idle(priv);
+		if (ret) {
+			dev_warn(priv->dev,
+				 "[DES-HOTPLUG] manual rescan failed or partial: %d\n",
+				 ret);
+			if (!first_err)
+				first_err = ret;
+		}
+
+		scanned++;
+	}
+
+	mutex_unlock(&max_des_instances_lock);
+
+	max_des_hotplug_rescan = 0;
+
+	pr_info("[DES-HOTPLUG] manual rescan done: scanned=%d skipped=%d first_err=%d trigger reset to 0\n",
+		scanned, skipped, first_err);
+
+	return 0;
+}
+
+static const struct kernel_param_ops max_des_hotplug_rescan_ops = {
+	.set = max_des_hotplug_rescan_set,
+	.get = param_get_int,
+};
+
+module_param_cb(hotplug_rescan,
+		&max_des_hotplug_rescan_ops,
+		&max_des_hotplug_rescan,
+		0644);
+MODULE_PARM_DESC(hotplug_rescan,
+		 "Write 1 to manually rescan MAX DES links when idle; auto resets to 0");
 
 static void max_des_fill_default_fmt(struct v4l2_mbus_framefmt *fmt)
 {
@@ -962,6 +1178,15 @@ int max_des_probe(struct i2c_client *client, struct max_des *des)
 		 priv->detected_links_mask);
 
 	ret = max_des_v4l2_register(priv);
+	if (ret)
+		return ret;
+
+	mutex_lock(&max_des_instances_lock);
+	list_add_tail(&priv->hotplug_node, &max_des_instances);
+	mutex_unlock(&max_des_instances_lock);
+
+	dev_info(priv->dev,
+		 "[DES-HOTPLUG] instance registered for manual rescan\n");
 
 	dev_info(priv->dev, "[DES-PROBE] Probe complete! Status: %d\n", ret);
 	dev_info(priv->dev, "============================================\n\n");
@@ -972,6 +1197,13 @@ EXPORT_SYMBOL_NS_GPL(max_des_probe, "MAX_SERDES");
 int max_des_remove(struct max_des *des)
 {
 	struct max_des_priv *priv = des->priv;
+
+	mutex_lock(&max_des_instances_lock);
+	if (!list_empty(&priv->hotplug_node))
+		list_del_init(&priv->hotplug_node);
+	mutex_unlock(&max_des_instances_lock);
+
+	pr_info("[DES-HOTPLUG] instance unregistered from manual rescan\n");
 	dev_info(priv->dev, "[DES] Removing driver...\n");
 	v4l2_async_unregister_subdev(&priv->sd);
 	v4l2_subdev_cleanup(&priv->sd);
