@@ -32,7 +32,7 @@ Installation & User Manual
 =============================================
 - [MIPI UPBOARD](https://github.com/up-division/mipi-upboard/wiki) 
 
-for more detail infomation, please go to md dir
+For more detail infomation, please go to md folder
 ```
 cd mipi-upboard/doc/md
 ```
