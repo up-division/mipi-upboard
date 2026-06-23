@@ -8,4 +8,3 @@ obj-$(CONFIG_VIDEO_IMX477) += imx477.o
 obj-$(CONFIG_VIDEO_IMX708) += imx708.o
 obj-$(CONFIG_VIDEO_IMX219) += imx219.o
 obj-$(CONFIG_VIDEO_OV5647) += ov5647.o
-obj-y += gmsl/
