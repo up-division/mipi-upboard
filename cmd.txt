@@ -16,6 +16,7 @@ sudo rmmod max96724_driver max_gmsl_lib
 sudo modprobe max96724_driver
 echo 'i2c-MAX96724:00' | sudo tee /sys/bus/i2c/drivers/max96724/bind
 echo 'i2c-MAX96724:00' | sudo tee /sys/bus/i2c/drivers/max96724/unbind
+echo 1 | sudo tee /sys/module/max_gmsl_lib/parameters/hotplug_rescan
 ------------------------------------------------------------------------------------------------------
 sudo dmesg -w | grep -E "isx|max9|ipu|i2c|imx"
 sudo dmesg | grep -E "isx|max9|ipu|i2c" | wl-copy 
