@@ -20,7 +20,7 @@ Supported camera sensors
   
 Special Requirements
 =============================================
-linux kernel 6.14+, following Intel IPU6 driver from kernel mainline.
+linux kernel 6.17, following Intel IPU6 driver from kernel mainline.
 
 Content of this repository
 =============================================
