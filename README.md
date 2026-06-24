@@ -34,7 +34,7 @@ Installation & User Manual
 
 For more detail infomation, please go to md folder
 ```
-cd mipi-upboard/doc/md
+cd mipi-upboard/docs/md
 ```
 
 ---------------
